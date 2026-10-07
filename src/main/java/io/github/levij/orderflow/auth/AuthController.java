@@ -13,8 +13,10 @@ import io.github.levij.orderflow.auth.dto.RegisterRequest;
 import io.github.levij.orderflow.auth.dto.RegisterResponse;
 import io.github.levij.orderflow.user.User;
 import io.github.levij.orderflow.user.UserService;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 
+@Tag(name = "Authentication", description = "Public registration and login.")
 @RestController
 @RequestMapping("/api/v1/auth")
 public class AuthController {

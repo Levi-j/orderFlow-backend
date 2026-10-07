@@ -21,11 +21,13 @@ public class SecurityConfig {
 				.httpBasic(httpBasic -> httpBasic.disable())
 				.logout(logout -> logout.disable())
 				.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-				// Rules are checked from top to bottom; the first matching rule wins.
+				// Rules are checked from top to bottom. The first matching rule wins.
 				.authorizeHttpRequests(requests -> requests
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/register", "/api/v1/auth/login").permitAll()
 						.requestMatchers(HttpMethod.GET, "/api/v1/products", "/api/v1/products/*").permitAll()
 						.requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/**").permitAll()
+						.requestMatchers(HttpMethod.GET, "/v3/api-docs", "/v3/api-docs/**", "/v3/api-docs.yaml",
+								"/swagger-ui.html", "/swagger-ui/**").permitAll()
 						.requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
 						.anyRequest().authenticated())
 				.oauth2ResourceServer(resourceServer -> resourceServer

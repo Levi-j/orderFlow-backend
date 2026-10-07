@@ -1,5 +1,6 @@
 package io.github.levij.orderflow.product;
 
+import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -9,7 +10,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 import io.github.levij.orderflow.common.web.PageResponse;
 import io.github.levij.orderflow.product.dto.ProductResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 
+@Tag(name = "Products", description = "Public catalog of active products.")
 @RestController
 @RequestMapping("/api/v1/products")
 public class ProductController {
@@ -21,7 +24,8 @@ public class ProductController {
 	}
 
 	@GetMapping
-	public PageResponse<ProductResponse> list(@PageableDefault(size = 20, sort = "name") Pageable pageable) {
+	public PageResponse<ProductResponse> list(
+			@ParameterObject @PageableDefault(size = 20, sort = "name") Pageable pageable) {
 		return PageResponse.from(productService.listActive(pageable).map(ProductResponse::from));
 	}
 
