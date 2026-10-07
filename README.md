@@ -4,7 +4,7 @@
 
 OrderFlow is a backend application for managing products, inventory, users, and customer orders.
 
-The project is built with Java and Spring Boot. At the moment, it includes the application foundation, health monitoring, automated tests, and a GitHub Actions CI workflow.
+It is built with Java and Spring Boot and currently includes PostgreSQL persistence, a product API, database migrations, integration testing, health monitoring, and CI with GitHub Actions.
 
 ## Tech Stack
 
@@ -12,9 +12,10 @@ The project is built with Java and Spring Boot. At the moment, it includes the a
 - Spring Boot 4.1
 - Spring MVC
 - Spring Boot Actuator
-- Maven
+- Spring Data JPA / Hibernate
 - PostgreSQL 18
 - Flyway
+- Maven
 - Docker Compose
 - JUnit Jupiter
 - REST Assured
@@ -24,7 +25,9 @@ The project is built with Java and Spring Boot. At the moment, it includes the a
 ## Requirements
 
 - JDK 21
-- Docker Desktop (or another Docker Engine with Docker Compose), needed for the local database and for the integration tests
+- Docker Desktop, or another Docker environment with Docker Compose
+
+Maven does not need to be installed separately because the project includes the Maven Wrapper.
 
 Check your Java version with:
 
@@ -32,13 +35,11 @@ Check your Java version with:
 java -version
 ```
 
-You do not need Maven installed separately. The project includes the Maven Wrapper.
+## Local Database
 
-## Database
+PostgreSQL runs in Docker Compose while the Spring Boot application runs directly on the host machine.
 
-OrderFlow uses PostgreSQL. For local development the database runs in Docker Compose, while the application itself runs directly on your machine. Database schema changes are managed with Flyway migrations in `src/main/resources/db/migration`; the application applies them automatically on startup.
-
-Create your local settings file from the example (`.env` is ignored by Git):
+Create a local environment file:
 
 ```powershell
 Copy-Item .env.example .env
@@ -51,17 +52,31 @@ docker compose up -d
 docker compose ps
 ```
 
-Wait until the `postgres` service is shown as `healthy`. PostgreSQL listens on `127.0.0.1:5432` only.
+Wait until the `postgres` container reports as healthy.
 
-Stop it again with:
+The database is exposed only on:
+
+```text
+127.0.0.1:5432
+```
+
+To stop PostgreSQL:
 
 ```powershell
 docker compose down
 ```
 
-This keeps the database data in a Docker volume. To also delete the data, use `docker compose down -v`.
+The database volume is preserved when using `docker compose down`.
 
-To look at the database with `psql`, replace the user and database with the values from your `.env` (the defaults are `orderflow`):
+To remove the database data as well:
+
+```powershell
+docker compose down -v
+```
+
+Flyway manages the database schema and automatically applies migrations when the application starts.
+
+You can inspect the products table with:
 
 ```powershell
 docker compose exec postgres psql -U orderflow -d orderflow -c "\d products"
@@ -69,7 +84,7 @@ docker compose exec postgres psql -U orderflow -d orderflow -c "\d products"
 
 ## Running the Application
 
-Start the database first (see above), then on Windows:
+Start PostgreSQL first, then run:
 
 ```powershell
 .\mvnw.cmd spring-boot:run
@@ -89,6 +104,74 @@ http://localhost:8080
 
 Press `Ctrl+C` to stop it.
 
+## Product API
+
+The public product API only exposes active products.
+
+```text
+GET /api/v1/products
+GET /api/v1/products/{id}
+```
+
+The admin API can create products and view both active and inactive products.
+
+```text
+POST /api/v1/admin/products
+GET  /api/v1/admin/products
+GET  /api/v1/admin/products/{id}
+```
+
+Admin endpoints are currently unprotected. Authentication and authorization will be added later, so the application should not be exposed to an untrusted network in its current state.
+
+Product lists support pagination and sorting:
+
+```text
+/api/v1/products?page=0&size=20&sort=name,asc
+```
+
+The default page size is 20 and the maximum is 100.
+
+A paginated response looks like:
+
+```json
+{
+  "content": [],
+  "page": 0,
+  "size": 20,
+  "totalElements": 0,
+  "totalPages": 0
+}
+```
+
+### Creating a Product
+
+With the application running:
+
+```powershell
+$body = @{
+    sku = "KEYBOARD-1"
+    name = "Keyboard"
+    description = "Mechanical keyboard"
+    price = 49.90
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Uri http://localhost:8080/api/v1/admin/products `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+Then list the public products:
+
+```powershell
+Invoke-RestMethod http://localhost:8080/api/v1/products
+```
+
+SKUs currently support uppercase letters, numbers, and hyphens and must be unique.
+
+Request validation and consistent API error responses have not been added yet, so invalid or duplicate input may currently result in a generic server error.
+
 ## Testing
 
 Run the regular test suite with:
@@ -97,29 +180,31 @@ Run the regular test suite with:
 .\mvnw.cmd test
 ```
 
-This runs the standard `*Test` classes. It does not need Docker.
+Tests following the `*Test` naming convention run here and do not require Docker.
 
-To run the full build, including integration tests:
+Run the full verification build with:
 
 ```powershell
 .\mvnw.cmd clean verify
 ```
 
-Integration tests use the `*IT` naming convention. They start the application on a random port and test it over HTTP using REST Assured, or query the database directly. They need Docker running: Testcontainers starts its own temporary PostgreSQL container, so the tests do not use the Compose database and do not need a `.env` file.
+Integration tests use the `*IT` naming convention.
 
-The packaged JAR is created in the `target/` directory.
+They run against a temporary PostgreSQL database created by Testcontainers, rather than the PostgreSQL instance from Docker Compose. Docker must therefore be running, but the local Compose database does not need to be started.
 
-GitHub Actions also runs the full verification build on Linux whenever changes are pushed to `main` or a pull request targets `main`.
+The integration tests cover the application health endpoint, PostgreSQL constraints, and the product API.
+
+GitHub Actions runs the same verification build on Linux whenever changes are pushed to `main` or a pull request targets `main`.
 
 ## Health Check
 
-The application exposes a Spring Boot Actuator health endpoint, which also reports whether the database is reachable (it returns `DOWN` with HTTP 503 if it is not):
+The application exposes a Spring Boot Actuator health endpoint:
 
 ```text
 GET /actuator/health
 ```
 
-With the application running, test it from PowerShell with:
+Check it with:
 
 ```powershell
 curl.exe http://localhost:8080/actuator/health
@@ -133,5 +218,7 @@ A healthy application returns a response similar to:
   "status": "UP"
 }
 ```
+
+The health check also monitors the database. If PostgreSQL becomes unavailable while the application is running, the endpoint reports `DOWN` and returns HTTP `503`.
 
 Only the health endpoint is currently exposed through Actuator.
