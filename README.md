@@ -4,7 +4,7 @@
 
 OrderFlow is a backend application designed for managing products, inventory, users, and customer orders.
 
-It is built with Java and Spring Boot and currently includes PostgreSQL persistence, a product API, database migrations, integration testing, health monitoring, and CI with GitHub Actions.
+It is built with Java and Spring Boot and currently includes PostgreSQL persistence, a product API, customer registration, database migrations, integration testing, health monitoring, and CI with GitHub Actions.
 
 ## Tech Stack
 
@@ -13,6 +13,7 @@ It is built with Java and Spring Boot and currently includes PostgreSQL persiste
 - Spring MVC
 - Spring Boot Actuator
 - Spring Data JPA / Hibernate
+- Spring Security Crypto / BCrypt
 - PostgreSQL 18
 - Flyway
 - Maven
@@ -29,7 +30,7 @@ It is built with Java and Spring Boot and currently includes PostgreSQL persiste
 
 Maven does not need to be installed separately because the project includes the Maven Wrapper.
 
-Check Java version with:
+Check the Java version with:
 
 ```powershell
 java -version
@@ -76,10 +77,11 @@ docker compose down -v
 
 Flyway manages the database schema and automatically applies migrations when the application starts.
 
-You can inspect the products table with:
+You can inspect the main tables with:
 
 ```powershell
 docker compose exec postgres psql -U orderflow -d orderflow -c "\d products"
+docker compose exec postgres psql -U orderflow -d orderflow -c "\d users"
 ```
 
 ## Running the Application
@@ -122,7 +124,7 @@ GET  /api/v1/admin/products
 GET  /api/v1/admin/products/{id}
 ```
 
-Admin endpoints are still unprotected for now. Authentication and authorization will be added later, so the application should not be exposed to an untrusted network in its current state.
+Admin endpoints are still unprotected. Authentication and authorization have not been enabled yet, so the application should not be exposed to an untrusted network in its current state.
 
 Product lists support pagination and sorting:
 
@@ -169,7 +171,7 @@ Then list the public products:
 Invoke-RestMethod http://localhost:8080/api/v1/products
 ```
 
-SKUs can contain letters, numbers, and hyphens. They must be unique, and they are converted to uppercase when a product is created. For example, `keyboard-1` is stored as `KEYBOARD-1`.
+SKUs can contain letters, numbers, and hyphens. They must be unique and are converted to uppercase when a product is created. For example, `keyboard-1` is stored as `KEYBOARD-1`.
 
 A product can be updated with:
 
@@ -185,7 +187,7 @@ Setting `active` to `false` hides the product from the public API without deleti
 
 Product create and update requests are validated before they reach the database.
 
-Invalid input returns HTTP `400`. For example, a blank name, invalid SKU, or invalid price will be rejected with details about the fields that failed validation.
+Invalid input returns HTTP `400`. For example, a blank name, invalid SKU, or invalid price is rejected with details about the fields that failed validation.
 
 API errors use `application/problem+json` and include a stable `code` that identifies the type of error.
 
@@ -213,13 +215,57 @@ Common error responses include:
 | `404` | Resource not found |
 | `405` | HTTP method is not supported |
 | `406` | Requested response type is not supported |
-| `409` | Conflict, such as a duplicate SKU |
+| `409` | Conflict, such as a duplicate SKU or email |
 | `415` | Request content type is not supported |
 | `500` | Unexpected server error |
 
-Errors also include codes such as `VALIDATION_FAILED`, `MALFORMED_REQUEST`, `RESOURCE_NOT_FOUND`, and `DUPLICATE_SKU`.
+Errors also include codes such as `VALIDATION_FAILED`, `MALFORMED_REQUEST`, `RESOURCE_NOT_FOUND`, `DUPLICATE_SKU`, and `EMAIL_ALREADY_REGISTERED`.
 
 Internal details such as stack traces, SQL statements, database constraint messages, and Java exception names are not returned to API clients.
+
+## User Registration
+
+Customers can create an account with:
+
+```text
+POST /api/v1/auth/register
+```
+
+Example:
+
+```powershell
+$body = @{
+    email = "jane.doe@example.com"
+    password = "a long passphrase works well"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Uri http://localhost:8080/api/v1/auth/register `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+A successful registration returns the user's `id`, normalized `email`, `role`, and `createdAt`.
+
+```json
+{
+  "id": 1,
+  "email": "jane.doe@example.com",
+  "role": "CUSTOMER",
+  "createdAt": "2026-10-07T20:22:59.547896Z"
+}
+```
+
+Registration always creates a `CUSTOMER`. The role cannot be chosen through the request.
+
+Emails are converted to lowercase before they are stored. This means addresses such as `Jane.Doe@Example.com` and `jane.doe@example.com` are treated as the same account. Registering an email that already exists returns HTTP `409` with the code `EMAIL_ALREADY_REGISTERED`.
+
+Passwords are hashed with BCrypt before they are stored. The raw password is never saved or returned by the API.
+
+Passwords must be at least 15 Unicode code points and no more than 72 bytes when encoded as UTF-8. For plain ASCII text this works out to 15–72 characters, while characters such as `€` or emoji use multiple bytes. There are no additional uppercase, number, or symbol requirements.
+
+Login and token authentication are not implemented yet. The admin product endpoints also remain unprotected until authentication and authorization are added.
 
 ## Testing
 
@@ -229,7 +275,7 @@ Run the regular test suite with:
 .\mvnw.cmd test
 ```
 
-Tests named `*Test` run here and do not require Docker. These include fast web-layer tests that check request validation and API error responses without starting PostgreSQL.
+Tests named `*Test` run here and do not require Docker. These include web-layer tests, password-policy tests, and service unit tests.
 
 Run the full verification build with:
 
@@ -239,9 +285,9 @@ Run the full verification build with:
 
 Integration tests use the `*IT` naming convention.
 
-They run against a temporary PostgreSQL database created by Testcontainers rather than the PostgreSQL instance from Docker Compose. Docker must therefore be running, but the local Compose database does not need to be started.
+They run against temporary PostgreSQL databases created by Testcontainers rather than the PostgreSQL instance from Docker Compose. Docker must therefore be running, but the local Compose database does not need to be started.
 
-The integration tests exercise the real application against PostgreSQL, including the health endpoint, database constraints, product creation and updates, validation, duplicate SKU handling, and public product visibility.
+The integration tests exercise the application against PostgreSQL, including the health endpoint, database constraints, product creation and updates, validation, duplicate handling, public product visibility, and customer registration.
 
 GitHub Actions runs the same verification build on Linux whenever changes are pushed to `main` or a pull request targets `main`.
 
