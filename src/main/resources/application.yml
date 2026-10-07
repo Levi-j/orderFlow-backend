@@ -1,6 +1,13 @@
 spring:
   application:
     name: orderflow
+  config:
+    # Local development settings (see .env.example). The file is optional.
+    import: optional:file:.env[.properties]
+  datasource:
+    url: jdbc:postgresql://localhost:5432/${POSTGRES_DB}
+    username: ${POSTGRES_USER}
+    password: ${POSTGRES_PASSWORD}
 
 management:
   endpoints:

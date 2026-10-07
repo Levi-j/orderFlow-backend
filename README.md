@@ -13,13 +13,18 @@ The project is built with Java and Spring Boot. At the moment, it includes the a
 - Spring MVC
 - Spring Boot Actuator
 - Maven
+- PostgreSQL 18
+- Flyway
+- Docker Compose
 - JUnit Jupiter
 - REST Assured
+- Testcontainers
 - GitHub Actions
 
 ## Requirements
 
 - JDK 21
+- Docker Desktop (or another Docker Engine with Docker Compose), needed for the local database and for the integration tests
 
 Check your Java version with:
 
@@ -29,9 +34,42 @@ java -version
 
 You do not need Maven installed separately. The project includes the Maven Wrapper.
 
+## Database
+
+OrderFlow uses PostgreSQL. For local development the database runs in Docker Compose, while the application itself runs directly on your machine. Database schema changes are managed with Flyway migrations in `src/main/resources/db/migration`; the application applies them automatically on startup.
+
+Create your local settings file from the example (`.env` is ignored by Git):
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Start PostgreSQL:
+
+```powershell
+docker compose up -d
+docker compose ps
+```
+
+Wait until the `postgres` service is shown as `healthy`. PostgreSQL listens on `127.0.0.1:5432` only.
+
+Stop it again with:
+
+```powershell
+docker compose down
+```
+
+This keeps the database data in a Docker volume. To also delete the data, use `docker compose down -v`.
+
+To look at the database with `psql`, replace the user and database with the values from your `.env` (the defaults are `orderflow`):
+
+```powershell
+docker compose exec postgres psql -U orderflow -d orderflow -c "\d products"
+```
+
 ## Running the Application
 
-On Windows:
+Start the database first (see above), then on Windows:
 
 ```powershell
 .\mvnw.cmd spring-boot:run
@@ -59,7 +97,7 @@ Run the regular test suite with:
 .\mvnw.cmd test
 ```
 
-This runs the standard `*Test` classes.
+This runs the standard `*Test` classes. It does not need Docker.
 
 To run the full build, including integration tests:
 
@@ -67,7 +105,7 @@ To run the full build, including integration tests:
 .\mvnw.cmd clean verify
 ```
 
-Integration tests use the `*IT` naming convention. They start the application on a random port and test it over HTTP using REST Assured.
+Integration tests use the `*IT` naming convention. They start the application on a random port and test it over HTTP using REST Assured, or query the database directly. They need Docker running: Testcontainers starts its own temporary PostgreSQL container, so the tests do not use the Compose database and do not need a `.env` file.
 
 The packaged JAR is created in the `target/` directory.
 
@@ -75,7 +113,7 @@ GitHub Actions also runs the full verification build on Linux whenever changes a
 
 ## Health Check
 
-The application exposes a Spring Boot Actuator health endpoint:
+The application exposes a Spring Boot Actuator health endpoint, which also reports whether the database is reachable (it returns `DOWN` with HTTP 503 if it is not):
 
 ```text
 GET /actuator/health
