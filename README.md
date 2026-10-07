@@ -1,8 +1,10 @@
 # OrderFlow
 
+[![CI](https://github.com/Levi-j/orderFlow-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Levi-j/orderFlow-backend/actions/workflows/ci.yml)
+
 OrderFlow is a backend application for managing products, inventory, users, and customer orders.
 
-I'm building it with Java and Spring Boot as a practical backend engineering project. The repository currently contains only the basic Spring Boot setup and health monitoring.
+The project is built with Java and Spring Boot. At the moment, it includes the application foundation, health monitoring, automated tests, and a GitHub Actions CI workflow.
 
 ## Tech Stack
 
@@ -12,12 +14,12 @@ I'm building it with Java and Spring Boot as a practical backend engineering pro
 - Spring Boot Actuator
 - Maven
 - JUnit Jupiter
-
-More components will be added.
+- REST Assured
+- GitHub Actions
 
 ## Requirements
 
-- JDK 21 installed locally
+- JDK 21
 
 Check your Java version with:
 
@@ -25,7 +27,7 @@ Check your Java version with:
 java -version
 ```
 
-Maven does not need to be installed separately because the project includes the Maven Wrapper.
+You do not need Maven installed separately. The project includes the Maven Wrapper.
 
 ## Running the Application
 
@@ -47,39 +49,45 @@ The application runs at:
 http://localhost:8080
 ```
 
-`Ctrl+C` to stop it.
+Press `Ctrl+C` to stop it.
 
-## Running Tests
+## Testing
 
-On Windows:
+Run the regular test suite with:
 
 ```powershell
 .\mvnw.cmd test
 ```
 
-To run the full Maven build:
+This runs the standard `*Test` classes.
+
+To run the full build, including integration tests:
 
 ```powershell
 .\mvnw.cmd clean verify
 ```
 
-The packaged application will be created under the `target/` directory.
+Integration tests use the `*IT` naming convention. They start the application on a random port and test it over HTTP using REST Assured.
+
+The packaged JAR is created in the `target/` directory.
+
+GitHub Actions also runs the full verification build on Linux whenever changes are pushed to `main` or a pull request targets `main`.
 
 ## Health Check
 
-Spring Boot Actuator is currently configured to expose the health endpoint:
+The application exposes a Spring Boot Actuator health endpoint:
 
 ```text
 GET /actuator/health
 ```
 
-You can test it with:
+With the application running, test it from PowerShell with:
 
 ```powershell
 curl.exe http://localhost:8080/actuator/health
 ```
 
-A healthy application should return a response similar to:
+A healthy application returns a response similar to:
 
 ```json
 {
@@ -88,4 +96,4 @@ A healthy application should return a response similar to:
 }
 ```
 
-Only the health endpoint is exposed at this stage.
+Only the health endpoint is currently exposed through Actuator.
