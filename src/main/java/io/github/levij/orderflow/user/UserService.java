@@ -1,6 +1,7 @@
 package io.github.levij.orderflow.user;
 
 import java.util.Locale;
+import java.util.Optional;
 
 import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -10,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import io.github.levij.orderflow.common.error.ConflictException;
 import io.github.levij.orderflow.common.error.ErrorCode;
+import io.github.levij.orderflow.common.error.NotFoundException;
 
 @Service
 public class UserService {
@@ -43,6 +45,17 @@ public class UserService {
 			}
 			throw ex;
 		}
+	}
+
+	@Transactional(readOnly = true)
+	public Optional<User> findByEmail(String email) {
+		return userRepository.findByEmail(email.toLowerCase(Locale.ROOT));
+	}
+
+	@Transactional(readOnly = true)
+	public User getById(Long id) {
+		return userRepository.findById(id)
+				.orElseThrow(() -> new NotFoundException("User " + id + " not found"));
 	}
 
 	private static ConflictException emailAlreadyRegistered() {

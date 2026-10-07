@@ -4,7 +4,7 @@
 
 OrderFlow is a backend application designed for managing products, inventory, users, and customer orders.
 
-It is built with Java and Spring Boot and currently includes PostgreSQL persistence, a product API, customer registration, database migrations, integration testing, health monitoring, and CI with GitHub Actions.
+It is built with Java and Spring Boot and currently includes PostgreSQL persistence, a product API, customer registration, JWT authentication, database migrations, integration testing, health monitoring, and CI with GitHub Actions.
 
 ## Tech Stack
 
@@ -13,7 +13,9 @@ It is built with Java and Spring Boot and currently includes PostgreSQL persiste
 - Spring MVC
 - Spring Boot Actuator
 - Spring Data JPA / Hibernate
-- Spring Security Crypto / BCrypt
+- Spring Security
+- JWT bearer authentication
+- BCrypt password hashing
 - PostgreSQL 18
 - Flyway
 - Maven
@@ -84,9 +86,33 @@ docker compose exec postgres psql -U orderflow -d orderflow -c "\d products"
 docker compose exec postgres psql -U orderflow -d orderflow -c "\d users"
 ```
 
+## JWT Signing Secret
+
+OrderFlow signs access tokens using a secret provided through `ORDERFLOW_JWT_SECRET`. The secret is kept outside the repository and must be at least 32 bytes when encoded as UTF-8.
+
+You can generate one in PowerShell with:
+
+```powershell
+$bytes = New-Object byte[] 32
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($bytes)
+$rng.Dispose()
+[Convert]::ToBase64String($bytes)
+```
+
+Add the generated value to your local `.env` file:
+
+```text
+ORDERFLOW_JWT_SECRET=<generated value>
+```
+
+The application will not start if the secret is missing or too short.
+
+Changing the secret also invalidates any access tokens that were signed with the previous value.
+
 ## Running the Application
 
-Start PostgreSQL first, then run:
+Start PostgreSQL and make sure `ORDERFLOW_JWT_SECRET` is configured, then run:
 
 ```powershell
 .\mvnw.cmd spring-boot:run
@@ -124,7 +150,9 @@ GET  /api/v1/admin/products
 GET  /api/v1/admin/products/{id}
 ```
 
-Admin endpoints are still unprotected. Authentication and authorization have not been enabled yet, so the application should not be exposed to an untrusted network in its current state.
+Admin endpoints now require a valid access token.
+
+Role-based authorization has not been added yet, so any authenticated user can currently access these endpoints. Restricting them to `ADMIN` users will be added later.
 
 Product lists support pagination and sorting:
 
@@ -148,7 +176,7 @@ A paginated response looks like:
 
 ### Creating a Product
 
-With the application running:
+With the application running and an access token stored in `$token`:
 
 ```powershell
 $body = @{
@@ -161,6 +189,7 @@ $body = @{
 Invoke-RestMethod `
     -Uri http://localhost:8080/api/v1/admin/products `
     -Method Post `
+    -Headers @{ Authorization = "Bearer $token" } `
     -ContentType "application/json" `
     -Body $body
 ```
@@ -212,6 +241,7 @@ Common error responses include:
 | Status | Meaning |
 | --- | --- |
 | `400` | Invalid request data or malformed JSON |
+| `401` | Login failed, or authentication is missing or invalid |
 | `404` | Resource not found |
 | `405` | HTTP method is not supported |
 | `406` | Requested response type is not supported |
@@ -219,7 +249,7 @@ Common error responses include:
 | `415` | Request content type is not supported |
 | `500` | Unexpected server error |
 
-Errors also include codes such as `VALIDATION_FAILED`, `MALFORMED_REQUEST`, `RESOURCE_NOT_FOUND`, `DUPLICATE_SKU`, and `EMAIL_ALREADY_REGISTERED`.
+Errors also include codes such as `VALIDATION_FAILED`, `MALFORMED_REQUEST`, `RESOURCE_NOT_FOUND`, `DUPLICATE_SKU`, `EMAIL_ALREADY_REGISTERED`, `INVALID_CREDENTIALS`, and `UNAUTHENTICATED`.
 
 Internal details such as stack traces, SQL statements, database constraint messages, and Java exception names are not returned to API clients.
 
@@ -265,7 +295,84 @@ Passwords are hashed with BCrypt before they are stored. The raw password is nev
 
 Passwords must be at least 15 Unicode code points and no more than 72 bytes when encoded as UTF-8. For plain ASCII text this works out to 15–72 characters, while characters such as `€` or emoji use multiple bytes. There are no additional uppercase, number, or symbol requirements.
 
-Login and token authentication are not implemented yet. The admin product endpoints also remain unprotected until authentication and authorization are added.
+Registration is public and does not require an access token.
+
+## Authentication
+
+Registered users can log in with:
+
+```text
+POST /api/v1/auth/login
+```
+
+Example:
+
+```powershell
+$body = @{
+    email = "jane.doe@example.com"
+    password = "a long passphrase works well"
+} | ConvertTo-Json
+
+$login = Invoke-RestMethod `
+    -Uri http://localhost:8080/api/v1/auth/login `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+A successful login returns a JWT access token:
+
+```json
+{
+  "accessToken": "<JWT>",
+  "tokenType": "Bearer",
+  "expiresIn": 1800
+}
+```
+
+Store the token for later requests:
+
+```powershell
+$token = $login.accessToken
+```
+
+Protected endpoints expect it in the `Authorization` header:
+
+```text
+Authorization: Bearer <token>
+```
+
+For example, the current user can be retrieved with:
+
+```powershell
+Invoke-RestMethod `
+    -Uri http://localhost:8080/api/v1/users/me `
+    -Headers @{ Authorization = "Bearer $token" }
+```
+
+The response contains the user's `id`, `email`, `role`, and `createdAt`. Password information is never returned.
+
+Access tokens are valid for 30 minutes. There are no refresh tokens yet, so once a token expires the user must log in again.
+
+The token identifies the account using the user's database ID and also contains the user's role. It does not contain the user's email or password information.
+
+A failed login returns HTTP `401` with the code `INVALID_CREDENTIALS`. The response is intentionally the same whether the email does not exist or the password is incorrect.
+
+A protected request with a missing, expired, tampered, or otherwise invalid token returns HTTP `401` with the code `UNAUTHENTICATED`.
+
+Current access rules are:
+
+| Access | Endpoints |
+| --- | --- |
+| Public | `POST /api/v1/auth/register` |
+| Public | `POST /api/v1/auth/login` |
+| Public | `GET /api/v1/products` |
+| Public | `GET /api/v1/products/{id}` |
+| Public | `GET /actuator/health` |
+| Authenticated | `GET /api/v1/users/me` |
+| Authenticated | `/api/v1/admin/**` |
+
+The admin routes currently require authentication only. Role-based access control has not been implemented yet, so a `CUSTOMER` token can still access them.
 
 ## Testing
 
@@ -275,7 +382,7 @@ Run the regular test suite with:
 .\mvnw.cmd test
 ```
 
-Tests named `*Test` run here and do not require Docker. These include web-layer tests, password-policy tests, and service unit tests.
+Tests named `*Test` run here and do not require Docker. These cover controller behavior, password validation, user registration logic, JWT configuration, and token creation and validation.
 
 Run the full verification build with:
 
@@ -287,7 +394,9 @@ Integration tests use the `*IT` naming convention.
 
 They run against temporary PostgreSQL databases created by Testcontainers rather than the PostgreSQL instance from Docker Compose. Docker must therefore be running, but the local Compose database does not need to be started.
 
-The integration tests exercise the application against PostgreSQL, including the health endpoint, database constraints, product creation and updates, validation, duplicate handling, public product visibility, and customer registration.
+The integration tests cover the health endpoint, database constraints, product creation and updates, customer registration, login, protected routes, and JWT validation.
+
+Tests use their own generated JWT secret, so the test suite does not depend on the secret configured for local development.
 
 GitHub Actions runs the same verification build on Linux whenever changes are pushed to `main` or a pull request targets `main`.
 

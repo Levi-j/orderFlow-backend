@@ -23,9 +23,12 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import io.github.levij.orderflow.auth.JwtTokenService;
 import io.github.levij.orderflow.support.TestcontainersConfiguration;
+import io.github.levij.orderflow.user.Role;
 import io.restassured.http.ContentType;
 import io.restassured.response.Response;
+import io.restassured.specification.RequestSpecification;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Import(TestcontainersConfiguration.class)
@@ -37,9 +40,15 @@ class ProductApiIT {
 	@Autowired
 	private JdbcTemplate jdbcTemplate;
 
+	@Autowired
+	private JwtTokenService jwtTokenService;
+
+	private String accessToken;
+
 	@BeforeEach
-	void cleanProducts() {
+	void setUp() {
 		jdbcTemplate.update("DELETE FROM products");
+		accessToken = jwtTokenService.issue(1L, Role.CUSTOMER).value();
 	}
 
 	@Test
@@ -58,7 +67,7 @@ class ProductApiIT {
 				.body("createdAt", notNullValue())
 				.body("updatedAt", notNullValue());
 
-		given()
+		authenticated()
 				.get(created.header("Location"))
 		.then()
 				.statusCode(200)
@@ -134,7 +143,7 @@ class ProductApiIT {
 	void adminCanStillReadInactiveProduct() {
 		long inactiveId = insertInactiveProduct("INACTIVE-1");
 
-		given().port(port)
+		authenticated()
 		.when()
 				.get("/api/v1/admin/products/{id}", inactiveId)
 		.then()
@@ -142,7 +151,7 @@ class ProductApiIT {
 				.body("sku", equalTo("INACTIVE-1"))
 				.body("active", equalTo(false));
 
-		given().port(port)
+		authenticated()
 		.when()
 				.get("/api/v1/admin/products")
 		.then()
@@ -158,7 +167,7 @@ class ProductApiIT {
 		.then()
 				.statusCode(404);
 
-		given().port(port)
+		authenticated()
 		.when()
 				.get("/api/v1/admin/products/{id}", 999999)
 		.then()
@@ -173,7 +182,7 @@ class ProductApiIT {
 				.statusCode(201)
 				.body("sku", equalTo("KEYBOARD-123"));
 
-		given()
+		authenticated()
 				.get(created.header("Location"))
 		.then()
 				.statusCode(200)
@@ -198,7 +207,7 @@ class ProductApiIT {
 
 	@Test
 	void invalidProductReturns400WithFieldErrors() {
-		given().port(port)
+		authenticated()
 				.contentType(ContentType.JSON)
 				.body("""
 						{"sku": "bad sku!", "name": "", "price": 0}
@@ -217,7 +226,7 @@ class ProductApiIT {
 
 	@Test
 	void malformedJsonReturns400WithoutJavaDetails() {
-		String responseBody = given().port(port)
+		String responseBody = authenticated()
 				.contentType(ContentType.JSON)
 				.body("{ \"sku\": ")
 		.when()
@@ -251,7 +260,7 @@ class ProductApiIT {
 		Instant updatedAt = Instant.parse(updated.path("updatedAt"));
 		assertThat(updatedAt).isAfter(createdAt);
 
-		given().port(port)
+		authenticated()
 		.when()
 				.get("/api/v1/admin/products/{id}", id)
 		.then()
@@ -270,7 +279,7 @@ class ProductApiIT {
 		given().port(port).get("/api/v1/products").then()
 				.statusCode(200)
 				.body("content.sku", not(hasItem("TOGGLE-1")));
-		given().port(port).get("/api/v1/admin/products/{id}", id).then()
+		authenticated().get("/api/v1/admin/products/{id}", id).then()
 				.statusCode(200)
 				.body("active", equalTo(false));
 
@@ -294,7 +303,7 @@ class ProductApiIT {
 	void invalidUpdateReturns400() {
 		Object id = createProduct("UPD-BAD", "Name", null, "1.00").path("id");
 
-		given().port(port)
+		authenticated()
 				.contentType(ContentType.JSON)
 				.body("""
 						{"name": "", "price": 1.00}
@@ -318,13 +327,17 @@ class ProductApiIT {
 				.body("code", equalTo("MALFORMED_REQUEST"));
 	}
 
+	private RequestSpecification authenticated() {
+		return given().port(port).auth().oauth2(accessToken);
+	}
+
 	private Response updateProduct(Object id, String name, String description, String price, boolean active) {
 		String descriptionJson = description == null ? "null" : "\"" + description + "\"";
 		String body = """
 				{"name": "%s", "description": %s, "price": %s, "active": %s}
 				""".formatted(name, descriptionJson, price, active);
 
-		return given().port(port)
+		return authenticated()
 				.contentType(ContentType.JSON)
 				.body(body)
 		.when()
@@ -337,7 +350,7 @@ class ProductApiIT {
 				{"sku": "%s", "name": "%s", "description": %s, "price": %s}
 				""".formatted(sku, name, descriptionJson, price);
 
-		return given().port(port)
+		return authenticated()
 				.contentType(ContentType.JSON)
 				.body(body)
 		.when()

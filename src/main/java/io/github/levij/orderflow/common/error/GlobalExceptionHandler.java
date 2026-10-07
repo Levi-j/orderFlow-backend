@@ -13,6 +13,9 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.authentication.AuthenticationServiceException;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -38,6 +41,22 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 	@ExceptionHandler(ConflictException.class)
 	ProblemDetail handleConflict(ConflictException ex) {
 		return problem(HttpStatus.CONFLICT, ex.getCode(), ex.getMessage());
+	}
+
+	@ExceptionHandler(InvalidCredentialsException.class)
+	ResponseEntity<ProblemDetail> handleInvalidCredentials(InvalidCredentialsException ex) {
+		return unauthorized(ErrorCode.INVALID_CREDENTIALS, ex.getMessage(), "Bearer");
+	}
+
+	@ExceptionHandler(AuthenticationException.class)
+	ResponseEntity<ProblemDetail> handleAuthentication(AuthenticationException ex) {
+		String challenge = ex instanceof OAuth2AuthenticationException ? "Bearer error=\"invalid_token\"" : "Bearer";
+		return unauthorized(ErrorCode.UNAUTHENTICATED, "Authentication is required to access this resource.", challenge);
+	}
+
+	@ExceptionHandler(AuthenticationServiceException.class)
+	ProblemDetail handleAuthenticationServiceFailure(AuthenticationServiceException ex) {
+		return handleUnexpected(ex);
 	}
 
 	@ExceptionHandler(DataIntegrityViolationException.class)
@@ -93,6 +112,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 			case 400 -> ErrorCode.MALFORMED_REQUEST;
 			default -> ErrorCode.INTERNAL_ERROR;
 		};
+	}
+
+	private static ResponseEntity<ProblemDetail> unauthorized(ErrorCode code, String detail, String challenge) {
+		return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+				.header(HttpHeaders.WWW_AUTHENTICATE, challenge)
+				.body(problem(HttpStatus.UNAUTHORIZED, code, detail));
 	}
 
 	private static ProblemDetail problem(HttpStatus status, ErrorCode code, String detail) {
