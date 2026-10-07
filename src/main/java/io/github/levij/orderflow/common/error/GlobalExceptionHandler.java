@@ -13,6 +13,7 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
@@ -52,6 +53,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 	ResponseEntity<ProblemDetail> handleAuthentication(AuthenticationException ex) {
 		String challenge = ex instanceof OAuth2AuthenticationException ? "Bearer error=\"invalid_token\"" : "Bearer";
 		return unauthorized(ErrorCode.UNAUTHENTICATED, "Authentication is required to access this resource.", challenge);
+	}
+
+	@ExceptionHandler(AccessDeniedException.class)
+	ProblemDetail handleAccessDenied(AccessDeniedException ex) {
+		return problem(HttpStatus.FORBIDDEN, ErrorCode.ACCESS_DENIED, "You do not have permission to access this resource.");
 	}
 
 	@ExceptionHandler(AuthenticationServiceException.class)

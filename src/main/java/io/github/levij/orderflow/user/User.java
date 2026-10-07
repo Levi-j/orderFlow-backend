@@ -51,6 +51,10 @@ public class User {
 		return new User(email, passwordHash, Role.CUSTOMER);
 	}
 
+	static User bootstrapAdmin(String email, String passwordHash) {
+		return new User(email, passwordHash, Role.ADMIN);
+	}
+
 	public Long getId() {
 		return id;
 	}

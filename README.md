@@ -4,7 +4,7 @@
 
 OrderFlow is a backend application designed for managing products, inventory, users, and customer orders.
 
-It is built with Java and Spring Boot and currently includes PostgreSQL persistence, a product API, customer registration, JWT authentication, database migrations, integration testing, health monitoring, and CI with GitHub Actions.
+It is built with Java and Spring Boot and currently includes PostgreSQL persistence, a product API, customer registration, JWT authentication, role-based access control, database migrations, integration testing, health monitoring, and CI with GitHub Actions.
 
 ## Tech Stack
 
@@ -42,11 +42,13 @@ java -version
 
 PostgreSQL runs in Docker Compose while the Spring Boot application runs directly on the host machine.
 
-Create a local environment file:
+Create a local environment file from the example:
 
 ```powershell
 Copy-Item .env.example .env
 ```
+
+The committed `.env.example` contains placeholders for the configuration the application can use. Values that represent secrets are intentionally left blank. Put your local values in `.env`; that file is ignored by Git.
 
 Start PostgreSQL:
 
@@ -88,9 +90,17 @@ docker compose exec postgres psql -U orderflow -d orderflow -c "\d users"
 
 ## JWT Signing Secret
 
-OrderFlow signs access tokens using a secret provided through `ORDERFLOW_JWT_SECRET`. The secret is kept outside the repository and must be at least 32 bytes when encoded as UTF-8.
+OrderFlow signs access tokens using a secret provided through `ORDERFLOW_JWT_SECRET`. The secret stays outside the repository and must be at least 32 bytes when encoded as UTF-8.
 
-You can generate one in PowerShell with:
+The blank entry in `.env.example` is intentional:
+
+```text
+ORDERFLOW_JWT_SECRET=
+```
+
+After copying `.env.example` to `.env`, generate your own secret and add it there.
+
+You can generate a suitable value in PowerShell with:
 
 ```powershell
 $bytes = New-Object byte[] 32
@@ -100,19 +110,46 @@ $rng.Dispose()
 [Convert]::ToBase64String($bytes)
 ```
 
-Add the generated value to your local `.env` file:
+Then set the generated value in your local `.env` file:
 
 ```text
 ORDERFLOW_JWT_SECRET=<generated value>
 ```
 
-The application will not start if the secret is missing or too short.
+The application will not start if the secret is missing, blank, or too short.
 
-Changing the secret also invalidates any access tokens that were signed with the previous value.
+Changing the secret invalidates access tokens that were signed with the previous value.
+
+## Creating an Administrator
+
+Public registration always creates `CUSTOMER` accounts. An administrator can instead be created when the application starts by configuring these two optional values in your local `.env` file:
+
+```text
+ORDERFLOW_ADMIN_EMAIL=admin@example.com
+ORDERFLOW_ADMIN_PASSWORD=<password following the normal password policy>
+```
+
+Both values are optional, but they must be provided together. If both are empty, administrator setup is skipped. If only one is provided, the application refuses to start so that a partial configuration does not go unnoticed.
+
+The administrator email is normalized to lowercase. The password follows the same rules as customer registration: at least 15 Unicode code points and no more than 72 bytes when encoded as UTF-8.
+
+The bootstrap is create-once:
+
+- If the email does not exist, an `ADMIN` account is created with a BCrypt password hash.
+- If an `ADMIN` with that email already exists, nothing is changed.
+- Restarting the application does not create another administrator.
+- Changing `ORDERFLOW_ADMIN_PASSWORD` later does not silently reset an existing administrator's password.
+- If the email already belongs to a `CUSTOMER`, startup fails instead of promoting that account.
+
+The administrator uses the same login endpoint as every other user. There is no separate admin login or public admin-registration endpoint.
 
 ## Running the Application
 
-Start PostgreSQL and make sure `ORDERFLOW_JWT_SECRET` is configured, then run:
+Start PostgreSQL and make sure `ORDERFLOW_JWT_SECRET` is configured in your local `.env` file.
+
+If you also want a bootstrap administrator, configure both `ORDERFLOW_ADMIN_EMAIL` and `ORDERFLOW_ADMIN_PASSWORD`.
+
+Then run:
 
 ```powershell
 .\mvnw.cmd spring-boot:run
@@ -150,9 +187,7 @@ GET  /api/v1/admin/products
 GET  /api/v1/admin/products/{id}
 ```
 
-Admin endpoints now require a valid access token.
-
-Role-based authorization has not been added yet, so any authenticated user can currently access these endpoints. Restricting them to `ADMIN` users will be added later.
+Admin endpoints require an access token belonging to an `ADMIN`. An authenticated `CUSTOMER` trying to use one of these endpoints receives HTTP `403`.
 
 Product lists support pagination and sorting:
 
@@ -176,7 +211,7 @@ A paginated response looks like:
 
 ### Creating a Product
 
-With the application running and an access token stored in `$token`:
+With the application running and an administrator's access token stored in `$token`:
 
 ```powershell
 $body = @{
@@ -242,6 +277,7 @@ Common error responses include:
 | --- | --- |
 | `400` | Invalid request data or malformed JSON |
 | `401` | Login failed, or authentication is missing or invalid |
+| `403` | Authenticated, but not allowed to use this endpoint |
 | `404` | Resource not found |
 | `405` | HTTP method is not supported |
 | `406` | Requested response type is not supported |
@@ -249,7 +285,7 @@ Common error responses include:
 | `415` | Request content type is not supported |
 | `500` | Unexpected server error |
 
-Errors also include codes such as `VALIDATION_FAILED`, `MALFORMED_REQUEST`, `RESOURCE_NOT_FOUND`, `DUPLICATE_SKU`, `EMAIL_ALREADY_REGISTERED`, `INVALID_CREDENTIALS`, and `UNAUTHENTICATED`.
+Errors also include codes such as `VALIDATION_FAILED`, `MALFORMED_REQUEST`, `RESOURCE_NOT_FOUND`, `DUPLICATE_SKU`, `EMAIL_ALREADY_REGISTERED`, `INVALID_CREDENTIALS`, `UNAUTHENTICATED`, and `ACCESS_DENIED`.
 
 Internal details such as stack traces, SQL statements, database constraint messages, and Java exception names are not returned to API clients.
 
@@ -305,6 +341,8 @@ Registered users can log in with:
 POST /api/v1/auth/login
 ```
 
+The same endpoint is used by both `CUSTOMER` and `ADMIN` accounts.
+
 Example:
 
 ```powershell
@@ -354,11 +392,20 @@ The response contains the user's `id`, `email`, `role`, and `createdAt`. Passwor
 
 Access tokens are valid for 30 minutes. There are no refresh tokens yet, so once a token expires the user must log in again.
 
-The token identifies the account using the user's database ID and also contains the user's role. It does not contain the user's email or password information.
+The token identifies the account using the user's database ID and contains the user's role. It does not contain the user's email or password information.
 
 A failed login returns HTTP `401` with the code `INVALID_CREDENTIALS`. The response is intentionally the same whether the email does not exist or the password is incorrect.
 
 A protected request with a missing, expired, tampered, or otherwise invalid token returns HTTP `401` with the code `UNAUTHENTICATED`.
+
+## Roles and Access
+
+OrderFlow currently has two roles:
+
+- `CUSTOMER`
+- `ADMIN`
+
+The user's role is stored in the signed JWT and is used by Spring Security when deciding whether a request is allowed.
 
 Current access rules are:
 
@@ -369,10 +416,31 @@ Current access rules are:
 | Public | `GET /api/v1/products` |
 | Public | `GET /api/v1/products/{id}` |
 | Public | `GET /actuator/health` |
-| Authenticated | `GET /api/v1/users/me` |
-| Authenticated | `/api/v1/admin/**` |
+| Any authenticated user | `GET /api/v1/users/me` |
+| `ADMIN` only | `/api/v1/admin/**` |
 
-The admin routes currently require authentication only. Role-based access control has not been implemented yet, so a `CUSTOMER` token can still access them.
+HTTP `401` and `403` represent different situations:
+
+- `401 UNAUTHENTICATED` means there is no valid authenticated user, for example because the token is missing, expired, or invalid.
+- `403 ACCESS_DENIED` means the user is authenticated but does not have permission to use that endpoint.
+
+For example, a `CUSTOMER` trying to access an admin route receives:
+
+```json
+{
+  "status": 403,
+  "title": "Forbidden",
+  "detail": "You do not have permission to access this resource.",
+  "instance": "/api/v1/admin/products",
+  "code": "ACCESS_DENIED"
+}
+```
+
+An `ADMIN` using the same route is allowed through normally.
+
+The role is taken from the signed access token rather than querying the database on every request. If a user's role were changed in the database, an access token that had already been issued would continue to carry its old role until it expires. Logging in again issues a token using the current stored role.
+
+Access tokens currently expire after 30 minutes, and there is no API for changing account roles.
 
 ## Testing
 
@@ -382,7 +450,7 @@ Run the regular test suite with:
 .\mvnw.cmd test
 ```
 
-Tests named `*Test` run here and do not require Docker. These cover controller behavior, password validation, user registration logic, JWT configuration, and token creation and validation.
+Tests named `*Test` run here and do not require Docker. They cover controller behavior, role-based access rules, password validation, user registration and administrator setup logic, JWT configuration, and token creation and validation.
 
 Run the full verification build with:
 
@@ -394,9 +462,9 @@ Integration tests use the `*IT` naming convention.
 
 They run against temporary PostgreSQL databases created by Testcontainers rather than the PostgreSQL instance from Docker Compose. Docker must therefore be running, but the local Compose database does not need to be started.
 
-The integration tests cover the health endpoint, database constraints, product creation and updates, customer registration, login, protected routes, and JWT validation.
+The integration tests cover the health endpoint, database constraints, product creation and updates, customer registration, login, protected routes, JWT validation, role-based authorization, and administrator setup.
 
-Tests use their own generated JWT secret, so the test suite does not depend on the secret configured for local development.
+Tests use their own JWT signing configuration and test-only administrator credentials where needed, so the test suite does not depend on secrets from your local `.env` file.
 
 GitHub Actions runs the same verification build on Linux whenever changes are pushed to `main` or a pull request targets `main`.
 
@@ -418,7 +486,10 @@ A healthy application returns a response similar to:
 
 ```json
 {
-  "groups": ["liveness", "readiness"],
+  "groups": [
+    "liveness",
+    "readiness"
+  ],
   "status": "UP"
 }
 ```

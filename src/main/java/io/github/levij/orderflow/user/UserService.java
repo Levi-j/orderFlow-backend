@@ -47,6 +47,25 @@ public class UserService {
 		}
 	}
 
+	@Transactional
+	public boolean ensureBootstrapAdmin(String email, String rawPassword) {
+		String normalizedEmail = email.toLowerCase(Locale.ROOT);
+
+		Optional<User> existing = userRepository.findByEmail(normalizedEmail);
+		if (existing.isPresent()) {
+			if (existing.get().getRole() == Role.ADMIN) {
+				return false;
+			}
+			throw new IllegalStateException(
+					"The bootstrap admin email (ORDERFLOW_ADMIN_EMAIL) already belongs to a non-admin account. "
+							+ "It will not be promoted automatically.");
+		}
+
+		String passwordHash = passwordEncoder.encode(rawPassword);
+		userRepository.saveAndFlush(User.bootstrapAdmin(normalizedEmail, passwordHash));
+		return true;
+	}
+
 	@Transactional(readOnly = true)
 	public Optional<User> findByEmail(String email) {
 		return userRepository.findByEmail(email.toLowerCase(Locale.ROOT));

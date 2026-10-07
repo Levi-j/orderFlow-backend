@@ -22,6 +22,9 @@ orderflow:
     secret: ${ORDERFLOW_JWT_SECRET:}
     issuer: orderflow
     access-token-ttl: PT30M
+  admin:
+    email: ${ORDERFLOW_ADMIN_EMAIL:}
+    password: ${ORDERFLOW_ADMIN_PASSWORD:}
 
 management:
   endpoints:

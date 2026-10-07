@@ -48,7 +48,7 @@ class ProductApiIT {
 	@BeforeEach
 	void setUp() {
 		jdbcTemplate.update("DELETE FROM products");
-		accessToken = jwtTokenService.issue(1L, Role.CUSTOMER).value();
+		accessToken = jwtTokenService.issue(1L, Role.ADMIN).value();
 	}
 
 	@Test

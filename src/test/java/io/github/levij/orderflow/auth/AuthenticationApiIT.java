@@ -188,7 +188,7 @@ class AuthenticationApiIT {
 	}
 
 	@Test
-	void adminRoutesRequireAuthenticationButNotYetAnAdminRole() {
+	void adminRoutesRejectAnonymousWith401AndCustomersWith403() {
 		given().port(port)
 		.when()
 				.get("/api/v1/admin/products")
@@ -199,13 +199,13 @@ class AuthenticationApiIT {
 		register(EMAIL, PASSWORD).then().statusCode(201);
 		String customerToken = login(EMAIL, PASSWORD).path("accessToken");
 
-		// Temporary: any authenticated user may use admin routes until role checks are added.
 		given().port(port)
 				.auth().oauth2(customerToken)
 		.when()
 				.get("/api/v1/admin/products")
 		.then()
-				.statusCode(200);
+				.statusCode(403)
+				.body("code", equalTo("ACCESS_DENIED"));
 	}
 
 	private void assertUnauthenticated(String token) {
