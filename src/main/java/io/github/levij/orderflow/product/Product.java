@@ -14,6 +14,7 @@ import jakarta.persistence.Table;
 @Entity
 @Table(name = "products")
 public class Product {
+
 	@Id
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	private Long id;
@@ -48,13 +49,24 @@ public class Product {
 		this.description = description;
 		this.price = price;
 		this.active = true;
-		Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
-		this.createdAt = now;
-		this.updatedAt = now;
+		this.createdAt = now();
+		this.updatedAt = this.createdAt;
 	}
 
 	public static Product create(String sku, String name, String description, BigDecimal price) {
 		return new Product(sku, name, description, price);
+	}
+
+	public void updateDetails(String name, String description, BigDecimal price, boolean active) {
+		this.name = name;
+		this.description = description;
+		this.price = price;
+		this.active = active;
+		this.updatedAt = now();
+	}
+
+	private static Instant now() {
+		return Instant.now().truncatedTo(ChronoUnit.MICROS);
 	}
 
 	public Long getId() {

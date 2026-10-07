@@ -6,15 +6,9 @@ import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
-public record CreateProductRequest(
-
-		@NotBlank
-		@Size(max = 64)
-		@Pattern(regexp = "[A-Za-z0-9-]*", message = "may only contain letters, digits and hyphens")
-		String sku,
+public record UpdateProductRequest(
 
 		@NotBlank
 		@Size(max = 200)
@@ -26,5 +20,8 @@ public record CreateProductRequest(
 		@NotNull
 		@DecimalMin("0.01")
 		@Digits(integer = 10, fraction = 2)
-		BigDecimal price) {
+		BigDecimal price,
+
+		@NotNull
+		Boolean active) {
 }

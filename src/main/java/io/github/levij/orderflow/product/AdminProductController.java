@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -16,6 +17,8 @@ import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 import io.github.levij.orderflow.common.web.PageResponse;
 import io.github.levij.orderflow.product.dto.CreateProductRequest;
 import io.github.levij.orderflow.product.dto.ProductResponse;
+import io.github.levij.orderflow.product.dto.UpdateProductRequest;
+import jakarta.validation.Valid;
 
 @RestController
 @RequestMapping("/api/v1/admin/products")
@@ -28,13 +31,18 @@ public class AdminProductController {
 	}
 
 	@PostMapping
-	public ResponseEntity<ProductResponse> create(@RequestBody CreateProductRequest request) {
+	public ResponseEntity<ProductResponse> create(@Valid @RequestBody CreateProductRequest request) {
 		Product product = productService.create(request);
 		URI location = ServletUriComponentsBuilder.fromCurrentRequest()
 				.path("/{id}")
 				.buildAndExpand(product.getId())
 				.toUri();
 		return ResponseEntity.created(location).body(ProductResponse.from(product));
+	}
+
+	@PutMapping("/{id}")
+	public ProductResponse update(@PathVariable Long id, @Valid @RequestBody UpdateProductRequest request) {
+		return ProductResponse.from(productService.updateForAdmin(id, request));
 	}
 
 	@GetMapping
