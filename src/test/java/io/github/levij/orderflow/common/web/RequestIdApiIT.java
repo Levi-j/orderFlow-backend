@@ -2,11 +2,13 @@ package io.github.levij.orderflow.common.web;
 
 import static io.restassured.RestAssured.given;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasKey;
 import static org.hamcrest.Matchers.not;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -167,13 +169,15 @@ class RequestIdApiIT {
 		postJson("/api/v1/auth/register", "correlation-demo-123",
 				Map.of("email", "correlated@example.com", "password", PASSWORD)).then().statusCode(201);
 
-		List<String> requestLogs = output.getOut().lines()
-				.filter(line -> line.contains("[correlation-demo-123]"))
-				.toList();
-		assertThat(requestLogs).anyMatch(line -> line.contains("eventName=user.registered"));
-		assertThat(requestLogs).filteredOn(line -> line.contains("eventName=http.request"))
-				.singleElement()
-				.satisfies(line -> assertThat(line).contains("method=POST", "path=/api/v1/auth/register ", "status=201"));
+		await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+			List<String> requestLogs = output.getOut().lines()
+					.filter(line -> line.contains("[correlation-demo-123]"))
+					.toList();
+			assertThat(requestLogs).anyMatch(line -> line.contains("eventName=user.registered"));
+			assertThat(requestLogs).filteredOn(line -> line.contains("eventName=http.request"))
+					.singleElement()
+					.satisfies(line -> assertThat(line).contains("method=POST", "path=/api/v1/auth/register ", "status=201"));
+		});
 	}
 
 	private Response postJson(String path, String requestId, Object body) {

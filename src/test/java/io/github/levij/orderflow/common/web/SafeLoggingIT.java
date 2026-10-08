@@ -2,8 +2,10 @@ package io.github.levij.orderflow.common.web;
 
 import static io.restassured.RestAssured.given;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -100,9 +102,9 @@ class SafeLoggingIT {
 		given().port(port).auth().oauth2(token).get("/api/v1/users/me").then().statusCode(200);
 		given().port(port).auth().oauth2("Marker.Invalid.Token").get("/api/v1/users/me").then().statusCode(401);
 
-		assertThat(output.getOut())
-				.contains("path=/api/v1/users/me status=200", "path=/api/v1/users/me status=401")
-				.doesNotContain(token, "Marker.Invalid.Token");
+		await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertThat(output.getOut())
+				.contains("path=/api/v1/users/me status=200", "path=/api/v1/users/me status=401"));
+		assertThat(output.getOut()).doesNotContain(token, "Marker.Invalid.Token");
 	}
 
 	@Test
