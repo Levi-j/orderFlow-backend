@@ -8,13 +8,30 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      # PostgreSQL 18+ images expect the volume at /var/lib/postgresql, not /var/lib/postgresql/data
       - postgres-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 10
+
+  app:
+    profiles:
+      - app
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      ORDERFLOW_JWT_SECRET: ${ORDERFLOW_JWT_SECRET:-}
+      ORDERFLOW_ADMIN_EMAIL: ${ORDERFLOW_ADMIN_EMAIL:-}
+      ORDERFLOW_ADMIN_PASSWORD: ${ORDERFLOW_ADMIN_PASSWORD:-}
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+    ports:
+      - "127.0.0.1:8080:8080"
 
 volumes:
   postgres-data:

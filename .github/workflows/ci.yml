@@ -26,6 +26,9 @@ jobs:
       - name: Build and verify
         run: ./mvnw -B -ntp verify
 
+      - name: Build Docker image
+        run: docker build --tag orderflow:ci .
+
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v7

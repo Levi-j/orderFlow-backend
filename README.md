@@ -2,91 +2,176 @@
 
 [![CI](https://github.com/Levi-j/orderFlow-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Levi-j/orderFlow-backend/actions/workflows/ci.yml)
 
-OrderFlow is a Spring Boot backend for managing products, users, inventory, and customer orders.
+OrderFlow is a Spring Boot backend for a small online store. It handles customer accounts, products, inventory, and orders, with most of the project focused on the parts of backend development where correctness matters more than simply exposing CRUD endpoints.
 
-I built it as a portfolio project to practice the kinds of problems that show up in real backend systems: authentication, authorization, database migrations, transactional workflows, inventory consistency, API validation, integration testing, logging, and CI.
+It's built to learn about problems such as transactional order placement, concurrent stock updates, safe retries, authentication and authorization, database migrations, and useful application logging.
 
-The project currently supports product and inventory management, customer registration and JWT authentication, role-based access control, transactional order placement with safe retry handling, order confirmation and cancellation, administrator order management, request correlation and structured logging, OpenAPI documentation, PostgreSQL persistence, automated testing with Testcontainers and REST Assured, and GitHub Actions CI.
+The application is a modular monolith backed by PostgreSQL. It can run locally with the application on the host, or as a complete Docker Compose stack.
+
+
+## Highlights
+
+- **JWT authentication and role-based access** — customers and administrators use the same login flow, while Spring Security controls which routes each role can access.
+- **Transactional order placement** — orders, order items, inventory changes, and inventory history are committed together or rolled back together.
+- **Concurrency-safe inventory** — PostgreSQL performs stock changes atomically, so overlapping requests cannot drive inventory below zero.
+- **Idempotent order creation** — clients can safely retry an order using the same `Idempotency-Key` without accidentally creating a duplicate.
+- **Optimistic locking** — competing order status changes are detected instead of silently overwriting each other.
+- **Historical order snapshots** — order items keep the SKU, product name, and price that existed when the order was placed.
+- **Request correlation** — every response has an `X-Request-Id`, which is also included in error responses and logs.
+- **Structured logging** — logs can be written as ECS-style JSON without an additional logging library.
+- **Real PostgreSQL integration tests** — Testcontainers is used for database, API, transaction, idempotency, and concurrency testing.
+- **Docker and CI** — the application has a multi-stage, non-root Docker image, and GitHub Actions verifies the project and builds the image.
+
 
 ## Tech Stack
 
 - Java 21
 - Spring Boot 4.1
 - Spring MVC
-- Spring Boot Actuator
 - Spring Data JPA / Hibernate
 - Spring Security
+- Spring Boot Actuator
 - JWT bearer authentication
 - BCrypt password hashing
-- OpenAPI / Swagger UI with springdoc-openapi
 - PostgreSQL 18
 - Flyway
+- OpenAPI / Swagger UI
 - Maven
-- Docker Compose
+- Docker and Docker Compose
 - JUnit Jupiter
 - REST Assured
 - Testcontainers
 - GitHub Actions
 
-## Requirements
 
-- JDK 21
-- Docker Desktop, or another Docker environment with Docker Compose
+## Architecture
 
-Maven does not need to be installed separately because the repository includes the Maven Wrapper.
+OrderFlow is a modular monolith: one Spring Boot application and one PostgreSQL database.
 
-Check the Java version with:
+The code is organized primarily by business feature rather than by technical layer.
 
-```powershell
-java -version
+```mermaid
+flowchart TB
+    client["Client<br/>(Swagger UI, curl, tests)"]
+
+    subgraph app["OrderFlow — Spring Boot"]
+        filter["RequestIdFilter<br/>request ID + access logging"]
+        security["Spring Security<br/>JWT + authorization"]
+        controllers["Controllers<br/>HTTP + validation"]
+        services["Services<br/>business rules + transactions"]
+        repositories["Repositories<br/>Spring Data JPA"]
+        errors["GlobalExceptionHandler<br/>ProblemDetail responses"]
+
+        filter --> security --> controllers --> services --> repositories
+
+        security -. "401 / 403" .-> errors
+        controllers -. "exceptions" .-> errors
+    end
+
+    db[("PostgreSQL 18<br/>Flyway-managed schema")]
+
+    client --> filter
+    repositories --> db
 ```
 
-## Local Database
+A normal request goes through the request-ID filter and Spring Security before reaching a controller. Controllers deal with HTTP concerns, while services contain the business rules and transaction boundaries. Repositories handle persistence.
 
-PostgreSQL runs in Docker while the Spring Boot application runs directly on the host machine.
+The main feature dependencies look like this:
 
-Create your local environment file from the example:
-
-```powershell
-Copy-Item .env.example .env
+```mermaid
+flowchart LR
+    auth["auth<br/>login, JWT, security"] --> user["user<br/>accounts, registration"]
+    order["order<br/>placement, lifecycle"] --> product["product<br/>catalog"]
+    order --> inventory["inventory<br/>stock, movements"]
+    inventory --> product
 ```
 
-`.env.example` contains the configuration keys used by the project. Secret values are intentionally left blank.
+Shared infrastructure such as error handling, pagination, request correlation, and OpenAPI configuration lives under `common`.
 
-Put your own local values in `.env`. The file is ignored by Git.
+Repositories are package-private where possible, so one business module cannot casually reach into another module's persistence layer. Cross-module communication goes through services instead.
 
-Start PostgreSQL:
+The same idea applies to entities: cross-module references are stored as IDs rather than broad JPA object graphs. JPA relationships are used where they make sense inside an aggregate, such as an order and its order items.
 
-```powershell
-docker compose up -d
-docker compose ps
+
+## Database Schema
+
+```mermaid
+erDiagram
+    users ||--o{ orders : places
+    users ||--o{ inventory_movements : performs
+    products ||--o| inventory_items : "has stock"
+    products ||--o{ inventory_movements : "has movements"
+    products ||--o{ order_items : "appears in"
+    orders ||--|{ order_items : contains
+    orders |o--o{ inventory_movements : causes
+
+    users {
+        bigint id PK
+        varchar email UK
+        varchar password_hash
+        varchar role
+    }
+
+    products {
+        bigint id PK
+        varchar sku UK
+        varchar name
+        numeric price
+        boolean active
+    }
+
+    inventory_items {
+        bigint product_id PK, FK
+        integer quantity_on_hand
+    }
+
+    inventory_movements {
+        bigint id PK
+        bigint product_id FK
+        bigint order_id FK
+        integer quantity_change
+        varchar reason
+        bigint performed_by_user_id FK
+    }
+
+    orders {
+        bigint id PK
+        bigint customer_id FK
+        varchar status
+        numeric total_amount
+        bigint version
+        varchar idempotency_key
+    }
+
+    order_items {
+        bigint id PK
+        bigint order_id FK
+        bigint product_id FK
+        varchar product_sku
+        varchar product_name
+        numeric unit_price
+        integer quantity
+        numeric line_total
+    }
 ```
 
-Wait until the `postgres` container reports as healthy.
+The diagram leaves out a few columns such as timestamps, descriptions, inventory notes, and the request fingerprint used for idempotency.
 
-PostgreSQL is exposed only on:
+Products and inventory are deliberately separate. A product describes what can be sold, while `inventory_items` holds the current quantity. If a product has never had stock added, the application treats it as having zero inventory.
+
+`inventory_movements` acts as the stock history. Manual adjustments point to the user who performed them, while movements caused by an order can also point back to that order.
+
+Order items store a snapshot of the product's SKU, name, and price. That means changing a product later does not rewrite old orders.
+
+Flyway owns the schema. Migrations live in:
 
 ```text
-127.0.0.1:5432
+src/main/resources/db/migration
 ```
 
-To stop PostgreSQL:
+Hibernate runs with schema validation and does not create or alter production tables.
 
-```powershell
-docker compose down
-```
-
-The database volume is preserved.
-
-To remove the stored database data as well:
-
-```powershell
-docker compose down -v
-```
-
-Flyway manages the database schema and automatically applies pending migrations when the application starts.
-
-You can inspect the main tables with:
+With PostgreSQL running, the tables can be inspected directly:
 
 ```powershell
 docker compose exec postgres psql -U orderflow -d orderflow -c "\d products"
@@ -97,21 +182,78 @@ docker compose exec postgres psql -U orderflow -d orderflow -c "\d orders"
 docker compose exec postgres psql -U orderflow -d orderflow -c "\d order_items"
 ```
 
-## JWT Signing Secret
 
-OrderFlow signs access tokens using a secret provided through `ORDERFLOW_JWT_SECRET`.
+## Running OrderFlow
 
-The secret is kept outside the repository and must be at least 32 bytes when encoded as UTF-8.
+There are two useful ways to run the project.
 
-The blank entry in `.env.example` is intentional:
+```mermaid
+flowchart LR
+    subgraph docker["Full Docker stack"]
+        direction LR
+        dc["Client"] -- "127.0.0.1:8080" --> app["OrderFlow container"]
+        app -- "postgres:5432" --> db1[("PostgreSQL container<br/>named volume")]
+    end
+
+    subgraph host["Host development"]
+        direction LR
+        hc["Client"] -- "localhost:8080" --> java["Spring Boot on host"]
+        java -- "localhost:5432" --> db2[("PostgreSQL container<br/>named volume")]
+    end
+```
+
+For simply trying the application, the full Docker stack is the easiest option.
+
+For development, I usually run PostgreSQL in Docker and the Spring Boot application directly through Maven.
+
+
+### Requirements
+
+For the full Docker setup:
+
+- Docker Desktop, or another Docker environment with Docker Compose
+
+For host development and running the tests:
+
+- JDK 21
+
+A global Maven installation is not required because the repository includes the Maven Wrapper.
+
+```powershell
+java -version
+```
+
+
+### Configuration
+
+Create a local `.env` file from the example:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+On Linux or macOS:
+
+```bash
+cp .env.example .env
+```
+
+`.env.example` documents the settings the project expects. Real secrets belong in `.env`, which is ignored by Git and excluded from the Docker build context.
+
+
+### JWT Signing Secret
+
+JWT access tokens are signed using `ORDERFLOW_JWT_SECRET`.
+
+The secret must be at least 32 bytes when encoded as UTF-8.
+
+The public `.env.example` intentionally leaves it blank:
 
 ```text
 ORDERFLOW_JWT_SECRET=
 ```
 
-After copying `.env.example` to `.env`, generate your own value.
-
-A suitable secret can be generated in PowerShell with:
+A random value can be generated in PowerShell:
 
 ```powershell
 $bytes = New-Object byte[] 32
@@ -121,53 +263,176 @@ $rng.Dispose()
 [Convert]::ToBase64String($bytes)
 ```
 
-Then add the result to `.env`:
+Or with OpenSSL:
+
+```bash
+openssl rand -base64 32
+```
+
+Then add the generated value to `.env`:
 
 ```text
 ORDERFLOW_JWT_SECRET=<generated value>
 ```
 
-The application refuses to start if the secret is missing, blank, or too short.
+The application fails during startup if the secret is missing, blank, or too short.
 
-Changing the secret invalidates tokens signed with the previous value.
+Changing the secret also invalidates any JWTs signed with the previous value.
 
-## Creating an Administrator
 
-Public registration always creates `CUSTOMER` accounts.
+### Creating an Administrator
 
-An administrator can be created through an optional startup bootstrap using:
+Public registration always creates a `CUSTOMER`.
+
+The first administrator can optionally be created at startup through:
 
 ```text
 ORDERFLOW_ADMIN_EMAIL=admin@example.com
-ORDERFLOW_ADMIN_PASSWORD=<password following the normal password policy>
+ORDERFLOW_ADMIN_PASSWORD=<password>
 ```
 
-Both values must be provided together.
+Both values have to be present together. Leaving both blank disables the bootstrap. Supplying only one causes startup to fail instead of silently running with incomplete configuration.
 
-If both are empty, administrator bootstrap is disabled. If only one is configured, the application refuses to start so a partial configuration does not go unnoticed.
-
-The email is normalized to lowercase. The password follows the same policy as customer registration:
+The administrator password follows the same rules as customer passwords:
 
 - at least 15 Unicode code points
 - no more than 72 bytes when encoded as UTF-8
 
-The bootstrap is create-once:
+The bootstrap is create-once. If the admin already exists, restarting the application leaves the account unchanged. Changing the environment password later does not silently reset the stored password.
 
-- If the email does not exist, an `ADMIN` account is created with a BCrypt password hash.
-- If an `ADMIN` with that email already exists, nothing is changed.
-- Restarting the application does not create duplicate administrators.
-- Changing `ORDERFLOW_ADMIN_PASSWORD` later does not silently reset an existing administrator's password.
-- If the configured email already belongs to a `CUSTOMER`, startup fails instead of promoting that account.
+If the configured email already belongs to a `CUSTOMER`, startup fails rather than promoting that account.
 
-Administrators use the same login endpoint as customers. There is no separate admin login or public admin-registration endpoint.
+There is no public administrator-registration endpoint.
 
-## Running the Application
 
-Start PostgreSQL and make sure `ORDERFLOW_JWT_SECRET` is configured in your local `.env`.
+### Running the Full Stack with Docker
 
-If you want the application to create an administrator on startup, also configure `ORDERFLOW_ADMIN_EMAIL` and `ORDERFLOW_ADMIN_PASSWORD`.
+Make sure `.env` exists and contains a valid JWT secret.
 
 Then run:
+
+```powershell
+docker compose --profile app up --build -d
+```
+
+This builds the OrderFlow image, starts PostgreSQL, waits for PostgreSQL to become healthy, and then starts the application.
+
+Check the containers:
+
+```powershell
+docker compose --profile app ps
+```
+
+Once the application has started:
+
+```powershell
+curl.exe http://localhost:8080/actuator/health
+```
+
+A healthy response contains:
+
+```json
+{
+  "groups": [
+    "liveness",
+    "readiness"
+  ],
+  "status": "UP"
+}
+```
+
+Swagger UI is available at:
+
+```text
+http://localhost:8080/swagger-ui.html
+```
+
+The API is bound to `127.0.0.1:8080`, so it is reachable from the local machine without being exposed to the rest of the network.
+
+Container logs can be followed with:
+
+```powershell
+docker compose --profile app logs -f app
+```
+
+The application container uses structured JSON logging by default.
+
+To stop the stack without deleting the database:
+
+```powershell
+docker compose --profile app down
+```
+
+Be careful with:
+
+```powershell
+docker compose down -v
+```
+
+The `-v` removes the PostgreSQL volume as well, which deletes the stored users, products, inventory, and orders.
+
+The application service is behind the `app` Compose profile. Running:
+
+```powershell
+docker compose up -d
+```
+
+without the profile still starts **only PostgreSQL**. That is the normal setup for host development.
+
+Inside the Compose network, the application connects to PostgreSQL using:
+
+```text
+postgres:5432
+```
+
+That is different from host development, where the application reaches PostgreSQL through:
+
+```text
+localhost:5432
+```
+
+`localhost` inside a container refers to that container itself, so using the Compose service name is what allows the two containers to communicate.
+
+Secrets are passed into the application at runtime. They are not built into the Docker image.
+
+
+### Building the Image Directly
+
+The image can also be built without Compose:
+
+```powershell
+docker build -t orderflow:local .
+```
+
+The Dockerfile uses two stages.
+
+The first stage has a Java 21 JDK and builds the application with the repository's Maven Wrapper.
+
+The second stage has only a Java 21 JRE and the built application JAR. It runs under an unprivileged `orderflow` user rather than root.
+
+Tests are not repeated during `docker build`; the test suite is run separately with Maven before the image is built in CI.
+
+Building the image does not require PostgreSQL, `.env`, or any application secrets. Those are runtime concerns.
+
+
+### Running on the Host
+
+For development, start only PostgreSQL:
+
+```powershell
+docker compose up -d
+docker compose ps
+```
+
+Wait for the `postgres` container to report as healthy.
+
+The database is exposed locally at:
+
+```text
+127.0.0.1:5432
+```
+
+Make sure your `.env` contains `ORDERFLOW_JWT_SECRET`, then run:
 
 ```powershell
 .\mvnw.cmd spring-boot:run
@@ -179,19 +444,42 @@ On Linux or macOS:
 ./mvnw spring-boot:run
 ```
 
-The application runs at:
+The API will be available at:
 
 ```text
 http://localhost:8080
 ```
 
-Press `Ctrl+C` to stop it.
+Press `Ctrl+C` to stop the application.
+
+When finished with PostgreSQL:
+
+```powershell
+docker compose down
+```
+
+The named database volume is preserved.
+
+
+## API Overview
+
+| Area | Endpoints | Access |
+| --- | --- | --- |
+| Health | `GET /actuator/health` | Public |
+| API docs | `/swagger-ui.html`, `/v3/api-docs` | Public |
+| Registration | `POST /api/v1/auth/register` | Public |
+| Login | `POST /api/v1/auth/login` | Public |
+| Product catalog | `GET /api/v1/products`, `GET /api/v1/products/{id}` | Public |
+| Current user | `GET /api/v1/users/me` | Authenticated |
+| Customer orders | `POST /api/v1/orders`, `GET /api/v1/orders`, `GET /api/v1/orders/{id}`, `POST /api/v1/orders/{id}/cancel` | `CUSTOMER` |
+| Product management | `/api/v1/admin/products/**` | `ADMIN` |
+| Inventory management | `/api/v1/admin/inventory/**` | `ADMIN` |
+| Order management | `/api/v1/admin/orders/**` | `ADMIN` |
+
 
 ## API Documentation
 
-OrderFlow exposes interactive API documentation through Swagger UI.
-
-With the application running, open:
+Swagger UI is available while the application is running:
 
 ```text
 http://localhost:8080/swagger-ui.html
@@ -203,32 +491,263 @@ The generated OpenAPI document is available at:
 http://localhost:8080/v3/api-docs
 ```
 
-Both documentation endpoints are public.
+Both are public.
 
-Public endpoints such as product browsing, registration, and login can be called directly from Swagger UI. Protected endpoints are marked with a lock icon.
+Public endpoints can be called immediately. To use a protected route in Swagger:
 
-To call a protected endpoint:
-
-1. Run `POST /api/v1/auth/login`.
-2. Copy the `accessToken` value from the response.
+1. Call `POST /api/v1/auth/login`.
+2. Copy the returned `accessToken`.
 3. Click **Authorize**.
-4. Paste the token into the `bearerAuth` field.
-5. Call a protected endpoint such as `GET /api/v1/users/me`.
+4. Paste the token into `bearerAuth`.
+5. Call a protected endpoint.
 
-Paste only the token itself. Swagger UI adds the `Bearer` prefix automatically.
+Paste only the token. Swagger adds the `Bearer` prefix.
 
-Authorizing in Swagger does not bypass application security. For example, a `CUSTOMER` token still receives `403 ACCESS_DENIED` when calling an admin endpoint.
+Swagger authorization does not bypass the application's role rules. A valid `CUSTOMER` token still receives `403 ACCESS_DENIED` on an administrator endpoint.
 
-## Product API
 
-The public product API exposes active products only:
+## Quick API Walkthrough
+
+This example goes through the main application flow: register a customer, log in as the administrator, create a product, add stock, place an order, retry it safely, and cancel it.
+
+It assumes an administrator has already been configured through the startup bootstrap.
+
+
+### PowerShell
+
+```powershell
+$base = "http://localhost:8080"
+
+curl.exe "$base/actuator/health"
+
+# Register and log in as a customer
+$customer = @{
+    email = "alice@example.com"
+    password = "alice uses a long passphrase"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "$base/api/v1/auth/register" `
+    -ContentType "application/json" `
+    -Body $customer
+
+$customerToken = (
+    Invoke-RestMethod `
+        -Method Post `
+        -Uri "$base/api/v1/auth/login" `
+        -ContentType "application/json" `
+        -Body $customer
+).accessToken
+
+# Log in as the administrator
+$adminPassword = Read-Host "Admin password" -AsSecureString
+
+$adminLogin = @{
+    email = "admin@example.com"
+    password = [System.Net.NetworkCredential]::new("", $adminPassword).Password
+} | ConvertTo-Json
+
+$adminToken = (
+    Invoke-RestMethod `
+        -Method Post `
+        -Uri "$base/api/v1/auth/login" `
+        -ContentType "application/json" `
+        -Body $adminLogin
+).accessToken
+
+$adminHeaders = @{
+    Authorization = "Bearer $adminToken"
+}
+
+# Create a product
+$product = Invoke-RestMethod `
+    -Method Post `
+    -Uri "$base/api/v1/admin/products" `
+    -Headers $adminHeaders `
+    -ContentType "application/json" `
+    -Body (@{
+        sku = "KEYBOARD-1"
+        name = "Keyboard"
+        price = 49.90
+    } | ConvertTo-Json)
+
+# Add stock
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "$base/api/v1/admin/inventory/$($product.id)/adjustments" `
+    -Headers $adminHeaders `
+    -ContentType "application/json" `
+    -Body (@{
+        quantityChange = 10
+        reason = "RESTOCK"
+    } | ConvertTo-Json)
+
+# Place an order
+$orderHeaders = @{
+    Authorization = "Bearer $customerToken"
+    "Idempotency-Key" = [guid]::NewGuid().ToString()
+}
+
+$orderBody = @{
+    items = @(
+        @{
+            productId = $product.id
+            quantity = 2
+        }
+    )
+} | ConvertTo-Json -Depth 3
+
+$order = Invoke-RestMethod `
+    -Method Post `
+    -Uri "$base/api/v1/orders" `
+    -Headers $orderHeaders `
+    -ContentType "application/json" `
+    -Body $orderBody
+
+# Retry the exact same request
+$retry = Invoke-WebRequest `
+    -Method Post `
+    -Uri "$base/api/v1/orders" `
+    -Headers $orderHeaders `
+    -ContentType "application/json" `
+    -Body $orderBody `
+    -UseBasicParsing
+
+$retry.Headers["Idempotent-Replayed"]
+
+# Read and cancel the order
+$customerHeaders = @{
+    Authorization = "Bearer $customerToken"
+}
+
+Invoke-RestMethod `
+    -Uri "$base/api/v1/orders/$($order.id)" `
+    -Headers $customerHeaders
+
+(
+    Invoke-RestMethod `
+        -Method Post `
+        -Uri "$base/api/v1/orders/$($order.id)/cancel" `
+        -Headers $customerHeaders
+).status
+
+(
+    Invoke-RestMethod `
+        -Uri "$base/api/v1/admin/inventory/$($product.id)" `
+        -Headers $adminHeaders
+).quantityOnHand
+```
+
+The retry should return:
+
+```text
+Idempotent-Replayed: true
+```
+
+After cancellation, the order is `CANCELLED` and the two units are returned to inventory, bringing the product back to 10.
+
+
+### Bash
+
+The Bash example uses `curl` and `jq`.
+
+```bash
+BASE=http://localhost:8080
+
+curl "$BASE/actuator/health"
+
+# Register and log in as a customer
+CUSTOMER='{"email":"alice@example.com","password":"alice uses a long passphrase"}'
+
+curl -s -X POST "$BASE/api/v1/auth/register" \
+  -H "Content-Type: application/json" \
+  -d "$CUSTOMER"
+
+CUSTOMER_TOKEN=$(
+  curl -s -X POST "$BASE/api/v1/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "$CUSTOMER" |
+  jq -r .accessToken
+)
+
+# Log in as the administrator
+read -rsp "Admin password: " ADMIN_PASSWORD
+echo
+
+ADMIN_TOKEN=$(
+  jq -n \
+    --arg email "admin@example.com" \
+    --arg password "$ADMIN_PASSWORD" \
+    '{email: $email, password: $password}' |
+  curl -s -X POST "$BASE/api/v1/auth/login" \
+    -H "Content-Type: application/json" \
+    -d @- |
+  jq -r .accessToken
+)
+
+# Create a product
+PRODUCT_ID=$(
+  curl -s -X POST "$BASE/api/v1/admin/products" \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"sku":"KEYBOARD-1","name":"Keyboard","price":49.90}' |
+  jq -r .id
+)
+
+# Add stock
+curl -s -X POST "$BASE/api/v1/admin/inventory/$PRODUCT_ID/adjustments" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"quantityChange":10,"reason":"RESTOCK"}'
+
+# Place an order
+KEY="checkout-$(date +%s)"
+ORDER="{\"items\":[{\"productId\":$PRODUCT_ID,\"quantity\":2}]}"
+
+ORDER_ID=$(
+  curl -s -X POST "$BASE/api/v1/orders" \
+    -H "Authorization: Bearer $CUSTOMER_TOKEN" \
+    -H "Idempotency-Key: $KEY" \
+    -H "Content-Type: application/json" \
+    -d "$ORDER" |
+  jq -r .id
+)
+
+# Retry the same order
+curl -s -D - -o /dev/null -X POST "$BASE/api/v1/orders" \
+  -H "Authorization: Bearer $CUSTOMER_TOKEN" \
+  -H "Idempotency-Key: $KEY" \
+  -H "Content-Type: application/json" \
+  -d "$ORDER" |
+grep -i "idempotent-replayed"
+
+# Read and cancel it
+curl -s "$BASE/api/v1/orders/$ORDER_ID" \
+  -H "Authorization: Bearer $CUSTOMER_TOKEN"
+
+curl -s -X POST "$BASE/api/v1/orders/$ORDER_ID/cancel" \
+  -H "Authorization: Bearer $CUSTOMER_TOKEN"
+
+curl -s "$BASE/api/v1/admin/inventory/$PRODUCT_ID" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+Passwords and tokens stay in shell variables rather than being printed deliberately.
+
+Because customer emails and SKUs are unique, use different values when repeating the walkthrough.
+
+
+## Products
+
+Anyone can browse active products:
 
 ```text
 GET /api/v1/products
 GET /api/v1/products/{id}
 ```
 
-Administrators can create products, update them, and view both active and inactive products:
+Administrators can manage the complete catalog, including inactive products:
 
 ```text
 POST /api/v1/admin/products
@@ -237,19 +756,15 @@ GET  /api/v1/admin/products
 GET  /api/v1/admin/products/{id}
 ```
 
-Admin endpoints require an access token belonging to an `ADMIN`.
-
-An authenticated `CUSTOMER` attempting to use an admin endpoint receives HTTP `403`.
-
 Product lists support pagination and sorting:
 
 ```text
-/api/v1/products?page=0&size=20&sort=name,asc
+GET /api/v1/products?page=0&size=20&sort=name,asc
 ```
 
 The default page size is 20 and the maximum is 100.
 
-A paginated response looks like:
+A page response looks like:
 
 ```json
 {
@@ -261,35 +776,7 @@ A paginated response looks like:
 }
 ```
 
-### Creating a Product
-
-With the application running and an administrator access token stored in `$token`:
-
-```powershell
-$body = @{
-    sku = "KEYBOARD-1"
-    name = "Keyboard"
-    description = "Mechanical keyboard"
-    price = 49.90
-} | ConvertTo-Json
-
-Invoke-RestMethod `
-    -Uri http://localhost:8080/api/v1/admin/products `
-    -Method Post `
-    -Headers @{ Authorization = "Bearer $token" } `
-    -ContentType "application/json" `
-    -Body $body
-```
-
-Then list the public products:
-
-```powershell
-Invoke-RestMethod http://localhost:8080/api/v1/products
-```
-
-SKUs can contain letters, numbers, and hyphens. They must be unique and are normalized to uppercase when a product is created.
-
-For example:
+SKUs are unique and normalized to uppercase. For example:
 
 ```text
 keyboard-1
@@ -301,25 +788,20 @@ is stored as:
 KEYBOARD-1
 ```
 
-A product can be updated with:
+A product's name, description, price, and active state can be updated, but its SKU cannot be changed after creation.
 
-```text
-PUT /api/v1/admin/products/{id}
-```
+Products are not deleted. Setting `active` to `false` removes a product from the public catalog while keeping it available to administrators and preserving references from historical orders.
 
-The update can change the product's name, description, price, and `active` status. The SKU cannot be changed after creation.
-
-Setting `active` to `false` hides the product from the public API without deleting it. Admin endpoints can still access it, and setting it back to `true` makes it public again.
 
 ### Validation and Errors
 
-Requests are validated before they reach the database.
+Request bodies are validated before business logic runs.
 
-Invalid input returns HTTP `400`. Examples include a blank product name, an invalid SKU, invalid prices, bad order quantities, malformed JSON, or a missing or invalid idempotency key when placing an order.
+Invalid input returns HTTP `400`. Examples include malformed JSON, blank names, invalid prices, invalid order quantities, or a missing/invalid idempotency key.
 
-API errors use `application/problem+json` and include a stable `code` that identifies the error type.
+Errors use `application/problem+json`.
 
-For example:
+A validation response looks like:
 
 ```json
 {
@@ -338,46 +820,49 @@ For example:
 }
 ```
 
-The `requestId` links the response to the server logs for the same request, which is useful when troubleshooting an error.
-
-Common responses include:
+The `code` is intended for programmatic handling, while `requestId` can be used to find the request in the server logs.
 
 | Status | Meaning |
 | --- | --- |
-| `400` | Invalid request data, malformed JSON, or a missing or invalid required value |
-| `401` | Login failed, or authentication is missing or invalid |
-| `403` | Authenticated, but not allowed to use the endpoint |
+| `400` | Invalid or malformed request |
+| `401` | Authentication is missing, invalid, or login failed |
+| `403` | Authenticated but not allowed to use the endpoint |
 | `404` | Resource not found |
-| `405` | HTTP method is not supported |
-| `406` | Requested response type is not supported |
-| `409` | Conflict with current state, such as a duplicate identifier, unavailable product, insufficient stock, an invalid order transition, a concurrent update, or an idempotency conflict |
-| `415` | Request content type is not supported |
+| `405` | HTTP method not supported |
+| `406` | Requested response type not supported |
+| `409` | Conflict with the current application state |
+| `415` | Unsupported request content type |
 | `500` | Unexpected server error |
 
-Error codes currently include values such as:
+Application error codes include:
 
-- `VALIDATION_FAILED`
-- `MALFORMED_REQUEST`
-- `RESOURCE_NOT_FOUND`
-- `DUPLICATE_SKU`
-- `INSUFFICIENT_STOCK`
-- `PRODUCT_NOT_AVAILABLE`
-- `INVALID_STATUS_TRANSITION`
-- `CONCURRENT_MODIFICATION`
-- `IDEMPOTENCY_KEY_REUSED`
-- `IDEMPOTENCY_KEY_IN_USE`
-- `EMAIL_ALREADY_REGISTERED`
-- `INVALID_CREDENTIALS`
-- `UNAUTHENTICATED`
-- `ACCESS_DENIED`
+```text
+VALIDATION_FAILED
+MALFORMED_REQUEST
+RESOURCE_NOT_FOUND
+DUPLICATE_SKU
+INSUFFICIENT_STOCK
+PRODUCT_NOT_AVAILABLE
+INVALID_STATUS_TRANSITION
+CONCURRENT_MODIFICATION
+IDEMPOTENCY_KEY_REUSED
+IDEMPOTENCY_KEY_IN_USE
+EMAIL_ALREADY_REGISTERED
+INVALID_CREDENTIALS
+UNAUTHENTICATED
+ACCESS_DENIED
+```
 
-Internal implementation details such as stack traces, SQL statements, database constraint messages, and Java exception names are not returned to API clients.
+Clients never receive stack traces, Java exception names, raw SQL, or database constraint messages.
+
 
 ## Inventory
 
-Inventory is stored separately from product information. Products describe what is being sold, while inventory tracks how many units are actually available.
+Product information and stock are kept separate.
 
-All inventory endpoints are restricted to administrators:
+A product tells the application what is being sold. Inventory tells it how many units are currently available.
+
+Inventory endpoints are administrator-only:
 
 ```text
 GET  /api/v1/admin/inventory/{productId}
@@ -385,17 +870,14 @@ POST /api/v1/admin/inventory/{productId}/adjustments
 GET  /api/v1/admin/inventory/{productId}/movements
 ```
 
-### Current Stock
 
-Get the current quantity for a product with:
+### Current Stock
 
 ```text
 GET /api/v1/admin/inventory/{productId}
 ```
 
-A product that has never had stock added is treated as having a quantity of `0`.
-
-For example:
+A product that has never had an inventory row is treated as having zero stock.
 
 ```json
 {
@@ -404,13 +886,10 @@ For example:
 }
 ```
 
+
 ### Adjusting Stock
 
-Stock is changed by posting an adjustment.
-
-A positive `quantityChange` adds stock. A negative value removes stock.
-
-For example:
+A positive `quantityChange` adds units and a negative value removes them.
 
 ```powershell
 $body = @{
@@ -427,7 +906,7 @@ Invoke-RestMethod `
     -Body $body
 ```
 
-A successful response returns the new quantity:
+A successful response contains the new quantity:
 
 ```json
 {
@@ -436,57 +915,53 @@ A successful response returns the new quantity:
 }
 ```
 
-Manual inventory changes currently support two reasons:
+Manual adjustments accept two reasons:
 
-- `RESTOCK` — stock being added, so the change must be positive
-- `ADJUSTMENT` — a correction that may either increase or decrease stock
+- `RESTOCK` — adding stock; the quantity change must be positive
+- `ADJUSTMENT` — correcting inventory in either direction
 
-A change of `0` is not allowed.
+A zero change is rejected.
 
-Stock can never fall below zero. If an adjustment would make the quantity negative, the request returns HTTP `409` with:
+Inventory is never allowed to become negative. The application performs stock changes with a conditional PostgreSQL update, and the table also has a database constraint as a final safety net.
+
+If an adjustment would make the quantity negative, the API returns HTTP `409`:
 
 ```text
 INSUFFICIENT_STOCK
 ```
 
-The quantity remains unchanged and no movement is recorded.
+No stock is changed and no movement is recorded.
 
-PostgreSQL also enforces the non-negative stock rule as a final safety check.
+Orders use the same inventory mechanism. Placing an order creates `ORDER_PLACED` movements; cancelling one creates `ORDER_CANCELLED` movements and returns the reserved stock.
 
-Orders use the same inventory system. Placing an order creates an `ORDER_PLACED` movement automatically. Cancelling an order puts the reserved stock back and creates an `ORDER_CANCELLED` movement.
+Those movement reasons are internal to the order workflow and cannot be submitted through the manual inventory endpoint.
 
-Those two movement reasons are created by the order workflow itself and cannot be submitted manually through the inventory adjustment API.
 
 ### Movement History
 
-Every successful stock change creates a movement record.
-
-The history can be viewed with:
+Every successful stock change creates an inventory movement.
 
 ```text
 GET /api/v1/admin/inventory/{productId}/movements
 ```
 
-It is paginated and returned newest first.
+The history is paginated and returned newest first.
 
-Each movement records details such as:
+A movement records information such as:
 
-- how much the quantity changed
-- why it changed
+- the quantity change
+- the reason
 - an optional note
-- the user responsible for the change
-- the related order ID when the change came from an order
-- when the change happened
+- the user responsible
+- the related order, when applicable
+- the time it happened
 
-The stock update and its movement record are stored in the same transaction. If one part fails, neither is committed.
+The stock change and movement record are part of the same transaction, so the current quantity and its history cannot be committed separately.
 
-That keeps the current quantity and its history consistent.
-
-The inventory endpoints also appear under **Admin Inventory** in Swagger UI.
 
 ## Orders
 
-Customers can place orders, view their own order history, and cancel pending orders through:
+Customer order endpoints are:
 
 ```text
 POST /api/v1/orders
@@ -495,13 +970,14 @@ GET  /api/v1/orders/{id}
 POST /api/v1/orders/{id}/cancel
 ```
 
-These endpoints are for `CUSTOMER` accounts. A missing or invalid token returns HTTP `401`, while an authenticated `ADMIN` receives HTTP `403`.
+They require a `CUSTOMER` access token.
+
+An administrator token does not act as a customer token. An authenticated `ADMIN` receives `403` on customer-order routes.
+
 
 ### Placing an Order
 
-The customer only chooses which products to buy and how many.
-
-With a customer access token stored in `$token`:
+The customer sends only product IDs and quantities.
 
 ```powershell
 $body = @{
@@ -524,17 +1000,13 @@ $order = Invoke-RestMethod `
     -Body $body
 ```
 
-Every new order needs an `Idempotency-Key`. The key identifies that particular attempt to place an order and lets the client retry safely if it is unsure whether the first request succeeded.
+The client does not send prices, totals, or a customer ID.
 
-An order must contain between 1 and 50 items. Each quantity must be between 1 and 1000, and the same product cannot appear more than once.
+OrderFlow takes the customer from the authenticated token, loads the current products, snapshots their data, and calculates the prices and totals itself.
 
-The request does not contain prices, totals, or a customer ID.
+Orders contain between 1 and 50 items. Each quantity must be between 1 and 1000, and a product cannot appear twice in the same order.
 
-OrderFlow gets the customer from the authenticated token, reads the current product data from the database, and calculates every line total and the final order total on the server.
-
-A successful order returns HTTP `201` and a `Location` header pointing to the new order.
-
-For example:
+A successful placement returns HTTP `201` and a `Location` header.
 
 ```json
 {
@@ -565,49 +1037,52 @@ For example:
 }
 ```
 
-New orders start as `PENDING`.
+Every new order starts as `PENDING`.
 
-### Transactional Order Placement
 
-Creating an order touches several parts of the database: the order itself, its items, inventory, and inventory movement history.
+### Transactions and Stock
 
-OrderFlow treats all of that as one transaction.
+Placing an order touches several tables:
 
-If the order succeeds, everything is committed together.
+- the order
+- its items
+- current inventory
+- inventory movement history
 
-If one of the products does not have enough stock, the request returns HTTP `409` with:
+They are all updated inside one database transaction.
+
+If every step succeeds, they are committed together.
+
+If something fails, the transaction rolls back as a whole.
+
+For example, lets say an order has two products and the first one has enough stock but the second one does not. OrderFlow may reach the first stock update before discovering the shortage on the second product, but the eventual rollback also undoes that first change. There is no partial order and no partial inventory deduction left behind.
+
+Insufficient stock returns HTTP `409`:
 
 ```text
 INSUFFICIENT_STOCK
 ```
 
-The whole transaction is rolled back. No partial order is left behind, no partial set of order items is stored, and stock that had already been processed for an earlier item is restored automatically by the rollback.
-
-A missing or inactive product results in:
+A product that is missing or no longer active returns:
 
 ```text
 PRODUCT_NOT_AVAILABLE
 ```
 
-with HTTP `409`.
+also with HTTP `409`.
 
-Products are checked before the order is written, so an unavailable product does not leave partial data behind.
+Stock deduction itself is performed atomically by PostgreSQL. The update succeeds only if enough units still exist at the moment the database executes it.
 
-Inventory changes are also safe when several orders arrive at the same time. The stock update is performed directly by PostgreSQL and only succeeds when enough units remain.
+That matters under concurrency. If three units remain and eight orders arrive at the same time, only three can successfully claim one. The others receive `INSUFFICIENT_STOCK`, and inventory never goes negative.
 
-For example, if three units are left and eight customers try to buy one at the same time, only three orders can succeed. The remaining requests receive `INSUFFICIENT_STOCK`, and inventory never becomes negative.
 
 ### Safe Retries
 
-A network problem can happen at an awkward moment: a customer sends an order, the server processes it, but the connection disappears before the response reaches the client.
+Order placement requires an `Idempotency-Key`.
 
-Simply sending the order again would normally be risky because the customer might accidentally create the same order twice.
+This handles a common failure case: the server successfully creates an order, but the client loses the connection before receiving the response. Without idempotency, retrying might create another order and deduct stock twice.
 
-OrderFlow avoids that problem with the `Idempotency-Key` header.
-
-A client creates one key for a new order and keeps using that same key when retrying that order. A different new order should use a new key.
-
-The key must be between 1 and 100 characters and can contain only:
+A key must contain 1–100 characters from:
 
 ```text
 A-Z
@@ -617,82 +1092,50 @@ _
 -
 ```
 
-Keys are case-sensitive.
+Keys are case-sensitive and scoped to the authenticated customer.
 
-They are also scoped to the authenticated customer. Two different customers can use the same text as their key without interfering with each other.
+If the same customer sends the same key with the same products and quantities, the request is treated as a replay.
 
-A missing or invalid key returns HTTP `400` with:
-
-```text
-MALFORMED_REQUEST
-```
-
-If a customer sends a key that has already been used with the same products and quantities, OrderFlow recognizes the request as a retry.
-
-It does not create another order, remove stock again, or write another `ORDER_PLACED` movement. Instead, it returns HTTP `201` with the original order ID and `Location`.
-
-The replay response also includes:
+OrderFlow returns the original order again with HTTP `201` and:
 
 ```text
 Idempotent-Replayed: true
 ```
 
-The order of items in the request does not matter. For example, `[product 1, product 2]` and `[product 2, product 1]` are treated as the same order request when the product IDs and quantities are the same.
+It does not create another order, deduct stock again, or create another `ORDER_PLACED` movement.
 
-Retrying the example above can be done with the same `$idempotencyKey` and `$body`:
+Item order in the JSON does not matter. Requests with the same product IDs and quantities produce the same request fingerprint even if the items are listed in a different order.
 
-```powershell
-$retry = Invoke-WebRequest `
-    -Uri http://localhost:8080/api/v1/orders `
-    -Method Post `
-    -Headers @{
-        Authorization = "Bearer $token"
-        "Idempotency-Key" = $idempotencyKey
-    } `
-    -ContentType "application/json" `
-    -Body $body `
-    -UseBasicParsing
-
-$retry.StatusCode
-$retry.Headers["Idempotent-Replayed"]
-```
-
-The expected result is:
-
-```text
-201
-true
-```
-
-If the same key is reused with different products or quantities, OrderFlow assumes the client is trying to use one key for two different orders and rejects the request with HTTP `409`:
+If the same key is reused for different products or quantities, the request is rejected:
 
 ```text
 IDEMPOTENCY_KEY_REUSED
 ```
 
-A replay represents the result of the original placement request. If the order has since been confirmed or cancelled, the replay still returns the original placement response. The `Location` can be followed to read the order's current state.
+with HTTP `409`.
 
-There is one additional case when two copies of the same request arrive almost simultaneously.
+There is one extra case when duplicate requests arrive at almost exactly the same time. Both may start before either transaction finishes.
 
-Both requests may begin before either one has finished. PostgreSQL guarantees that only one of them can create an order for that customer and key. The other request can receive HTTP `409` with:
+A database uniqueness constraint guarantees that only one order can win for a given customer and idempotency key. The other request receives:
 
 ```text
 IDEMPOTENCY_KEY_IN_USE
 ```
 
-That response means another request won the race. The client can retry with the same key; once the successful request has committed, the retry returns the existing order normally.
+with HTTP `409`.
 
-The losing request does not remove any stock.
+The client can then retry the same request. Once the winning transaction has committed, the retry resolves to the existing order normally.
 
-If the original order attempt fails completely—for example because there is not enough stock—the key is not permanently consumed. The failed transaction is rolled back, and the customer can retry the same request with the same key later.
+If the original placement fails entirely, such as because of insufficient stock, the transaction rolls back and the key is not permanently consumed.
 
 Idempotency keys currently do not expire.
 
+
 ### Order History
 
-Order items keep a snapshot of the product at the time the order is placed.
+Order items are historical snapshots rather than live views of the product table.
 
-Each item stores:
+Each item keeps:
 
 - product ID
 - SKU
@@ -701,98 +1144,87 @@ Each item stores:
 - quantity
 - line total
 
-This matters because the product catalog can change later.
+If a keyboard costs `49.90` when an order is placed and an administrator later changes it to `59.90`, the old order still shows `49.90`.
 
-For example, if a keyboard costs `49.90` when an order is placed and an administrator later changes its price to `59.90`, the old order still shows the original `49.90`.
+That makes an order behave more like a receipt.
 
-An order therefore behaves more like a receipt than a live view of the product catalog. Later changes do not rewrite what the customer originally bought.
 
 ### Viewing Orders
 
-`GET /api/v1/orders` returns the authenticated customer's orders as a paginated list, newest first.
+```text
+GET /api/v1/orders
+```
 
-The list contains order summaries rather than every order item, which keeps the endpoint lightweight.
-
-For example:
+returns the current customer's order history, newest first, using pagination.
 
 ```text
 GET /api/v1/orders?page=0&size=20
 ```
 
-`GET /api/v1/orders/{id}` returns a single order together with its item snapshots.
+The list uses summaries rather than loading every order item.
 
-Customers can only access their own orders.
+```text
+GET /api/v1/orders/{id}
+```
 
-If one customer requests another customer's order ID, OrderFlow returns HTTP `404`, the same as it would for an order that does not exist.
+returns one order together with its items.
 
-This avoids revealing whether another customer's order exists.
+Customers can only see their own orders.
+
+Requesting another customer's order returns the same `404` used for a nonexistent order. This avoids revealing whether the other order exists.
+
 
 ### Order Status
 
-Every order is in one of three states:
+Orders have three states:
 
-- `PENDING` — the order has been placed and is waiting for a decision
-- `CONFIRMED` — an administrator has accepted the order
-- `CANCELLED` — the order was cancelled by the customer or an administrator
+| Status | Meaning |
+| --- | --- |
+| `PENDING` | Placed and waiting for a decision |
+| `CONFIRMED` | Accepted by an administrator |
+| `CANCELLED` | Cancelled by the customer or an administrator |
 
 Only a `PENDING` order can change state.
 
-The allowed transitions are:
-
-| Current status | Confirm | Cancel |
+| Current state | Confirm | Cancel |
 | --- | --- | --- |
-| `PENDING` | becomes `CONFIRMED` by an administrator | becomes `CANCELLED` by the customer or an administrator |
+| `PENDING` | `CONFIRMED` by admin | `CANCELLED` by customer or admin |
 | `CONFIRMED` | rejected | rejected |
 | `CANCELLED` | rejected | rejected |
 
-`CONFIRMED` and `CANCELLED` are final states. There is no reopen operation and no way to move an order back to `PENDING`.
+`CONFIRMED` and `CANCELLED` are terminal.
 
-Trying to perform a transition that is not allowed returns HTTP `409` with:
+An invalid transition returns HTTP `409`:
 
 ```text
 INVALID_STATUS_TRANSITION
 ```
+
 
 ### Cancelling an Order
 
-A customer can cancel one of their own `PENDING` orders:
-
-```powershell
-Invoke-RestMethod `
-    -Uri http://localhost:8080/api/v1/orders/1/cancel `
-    -Method Post `
-    -Headers @{ Authorization = "Bearer $token" }
-```
-
-A successful request returns the updated order with status `CANCELLED`.
-
-The order itself is kept as part of the customer's history. Its items, prices, and totals do not change.
-
-The important part of cancellation is what happens to inventory.
-
-Stock was removed when the order was originally placed. If that pending order is cancelled, OrderFlow puts those quantities back into inventory and records an `ORDER_CANCELLED` movement for each item.
-
-For example, if an order reduced a keyboard from 10 units to 8, cancelling that order restores it to 10.
-
-The order status change, stock restoration, and movement records all belong to the same database transaction. They either succeed together or they are all rolled back together.
-
-That means the application cannot end up with an order marked `CANCELLED` while its stock is still missing.
-
-Cancellation also works if a product has been deactivated after the order was placed. The order already contains the product ID and quantity it needs to restore the stock, so the product does not need to be currently available for sale.
-
-Cancelling the same order twice is not allowed. The first cancellation restores the stock. A second request receives:
+A customer can cancel their own pending order:
 
 ```text
-INVALID_STATUS_TRANSITION
+POST /api/v1/orders/{id}/cancel
 ```
 
-with HTTP `409`, and the inventory is not changed again.
+Cancellation keeps the order and its items in history, but changes the state to `CANCELLED`.
 
-Customers can only cancel their own orders. Trying to cancel another customer's order returns HTTP `404`, just like trying to access another customer's order normally.
+The important side effect is inventory restoration.
 
-### Managing Orders as an Administrator
+If an order reserved two keyboards, cancelling it adds those two units back and records an `ORDER_CANCELLED` movement.
 
-Administrators have their own order-management endpoints:
+The status change, stock restoration, and movement history all belong to one transaction. They either all succeed or all roll back.
+
+Cancellation also works if a product was deactivated after the order was created. The order already contains the product ID and quantity needed to restore inventory.
+
+Cancelling the same order twice is not allowed. The second attempt receives `INVALID_STATUS_TRANSITION`, and stock is not returned a second time.
+
+
+### Administrator Order Management
+
+Administrators can work with orders from all customers:
 
 ```text
 GET  /api/v1/admin/orders
@@ -801,11 +1233,7 @@ POST /api/v1/admin/orders/{id}/confirm
 POST /api/v1/admin/orders/{id}/cancel
 ```
 
-`GET /api/v1/admin/orders` returns orders from all customers as a paginated list, newest first.
-
-Unlike the customer order list, each admin summary also includes the customer ID so an administrator can see who placed the order.
-
-The list can optionally be filtered by status:
+The list can be filtered by status:
 
 ```text
 GET /api/v1/admin/orders?status=PENDING
@@ -813,63 +1241,30 @@ GET /api/v1/admin/orders?status=CONFIRMED
 GET /api/v1/admin/orders?status=CANCELLED
 ```
 
-An invalid status value returns HTTP `400`.
+Admin summaries include the customer ID.
 
-`GET /api/v1/admin/orders/{id}` returns the full order together with its items.
+Confirming a pending order changes it to `CONFIRMED`. Inventory does not change at confirmation time because it was already deducted when the order was placed.
 
-#### Confirming an Order
+Administrator cancellation behaves like customer cancellation: stock is restored and `ORDER_CANCELLED` movements are recorded.
 
-An administrator can confirm a `PENDING` order with:
+The movement records also capture the administrator's user ID, making an administrative cancellation distinguishable from one performed by the customer.
 
-```text
-POST /api/v1/admin/orders/{id}/confirm
-```
-
-The order becomes `CONFIRMED`.
-
-Confirmation does not change inventory.
-
-The stock was already removed when the customer placed the order, and confirming the order means that reservation is now final.
-
-Trying to confirm an order that is already `CONFIRMED` or `CANCELLED` returns:
-
-```text
-INVALID_STATUS_TRANSITION
-```
-
-#### Cancelling an Order as an Administrator
-
-An administrator can also cancel a `PENDING` order:
-
-```text
-POST /api/v1/admin/orders/{id}/cancel
-```
-
-The inventory behavior is the same as customer cancellation: the stock is returned and `ORDER_CANCELLED` movements are created.
-
-The movement history records the administrator's user ID as the person who performed the cancellation.
-
-This makes it possible to distinguish between an order cancelled by the customer and one cancelled administratively.
 
 ### Concurrent Order Changes
 
 Order status changes use optimistic locking.
 
-Each order has an internal version number that changes whenever the order status changes.
+Each order has an internal version number. When two requests load the same version and then both try to update it, only one can succeed.
 
-This protects against situations where two requests try to update the same `PENDING` order at nearly the same time.
+For example, a customer could try to cancel an order at the same time an administrator tries to confirm it.
 
-For example, a customer might try to cancel an order at the same moment an administrator tries to confirm it.
-
-Only one update is allowed to win.
-
-If the second request sees the order after the first change has already completed, the normal lifecycle rule rejects it with:
+If one operation finishes before the other reads the order, the normal state-transition rule rejects the second operation with:
 
 ```text
 INVALID_STATUS_TRANSITION
 ```
 
-If both requests read the same old version before either change is committed, the stale update is rejected with:
+If both requests read the same old version before either writes, the stale update is rejected with:
 
 ```text
 CONCURRENT_MODIFICATION
@@ -877,15 +1272,12 @@ CONCURRENT_MODIFICATION
 
 and HTTP `409`.
 
-Nothing from the rejected transaction is kept.
+This is particularly important for cancellation because cancellation restores inventory. A stale cancellation must never be allowed to return the same stock twice.
 
-For a cancellation, that is especially important because returning inventory is a side effect. OrderFlow checks that the order version is still current before restoring stock, so a stale cancellation cannot accidentally add the same inventory back twice.
-
-The order endpoints appear under **Orders** and **Admin Orders** in Swagger UI.
 
 ## User Registration
 
-Customers can create an account with:
+Customers register through:
 
 ```text
 POST /api/v1/auth/register
@@ -906,7 +1298,7 @@ Invoke-RestMethod `
     -Body $body
 ```
 
-A successful registration returns the user's `id`, normalized `email`, `role`, and `createdAt`.
+A successful response contains:
 
 ```json
 {
@@ -917,11 +1309,9 @@ A successful registration returns the user's `id`, normalized `email`, `role`, a
 }
 ```
 
-Registration always creates a `CUSTOMER`. The role cannot be selected through the request.
+Registration always creates a `CUSTOMER`; the caller cannot choose a role.
 
-Emails are converted to lowercase before being stored.
-
-Addresses such as:
+Emails are normalized to lowercase, so:
 
 ```text
 Jane.Doe@Example.com
@@ -933,38 +1323,34 @@ and:
 jane.doe@example.com
 ```
 
-are therefore treated as the same account.
+refer to the same account.
 
-Registering an email that already exists returns HTTP `409` with:
+Trying to register the same email again returns HTTP `409`:
 
 ```text
 EMAIL_ALREADY_REGISTERED
 ```
 
-Passwords are hashed with BCrypt before being stored. The raw password is never saved or returned by the API.
+Passwords are stored using BCrypt. The raw password is never stored or returned.
 
-Passwords must be:
+The password policy is intentionally simple:
 
-- at least 15 Unicode code points
-- no more than 72 bytes when encoded as UTF-8
+- minimum 15 Unicode code points
+- maximum 72 bytes when encoded as UTF-8
+- no uppercase, numeric, or symbol requirement
 
-For plain ASCII text, that means 15–72 characters. Characters such as `€` or emoji use multiple UTF-8 bytes, so the maximum number of characters can be lower.
+The byte limit matters because BCrypt's traditional input limit is based on bytes, not Java character count. Plain ASCII therefore allows up to 72 characters, while characters such as `€` or emoji consume several UTF-8 bytes each.
 
-There are no additional uppercase, number, or symbol requirements.
-
-Registration is public and does not require an access token.
 
 ## Authentication
 
-Registered users log in with:
+Users log in through:
 
 ```text
 POST /api/v1/auth/login
 ```
 
-The same endpoint is used for both `CUSTOMER` and `ADMIN` accounts.
-
-Example:
+The same endpoint handles both customers and administrators.
 
 ```powershell
 $body = @{
@@ -979,7 +1365,7 @@ $login = Invoke-RestMethod `
     -Body $body
 ```
 
-A successful login returns a JWT access token:
+A successful response looks like:
 
 ```json
 {
@@ -989,13 +1375,7 @@ A successful login returns a JWT access token:
 }
 ```
 
-Store the token for later requests:
-
-```powershell
-$token = $login.accessToken
-```
-
-Protected endpoints expect it in the `Authorization` header:
+Use the token in subsequent requests:
 
 ```text
 Authorization: Bearer <token>
@@ -1004,62 +1384,99 @@ Authorization: Bearer <token>
 For example:
 
 ```powershell
+$token = $login.accessToken
+
 Invoke-RestMethod `
     -Uri http://localhost:8080/api/v1/users/me `
     -Headers @{ Authorization = "Bearer $token" }
 ```
 
-The response contains the user's `id`, `email`, `role`, and `createdAt`.
+Access tokens are valid for 30 minutes.
 
-Password information is never returned.
+There are no refresh tokens. Once a token expires, the user logs in again.
 
-Access tokens are valid for 30 minutes. There are no refresh tokens yet, so an expired token requires another login.
+The JWT uses the database user ID as its subject and carries the user's role. It does not contain the user's email or password.
 
-The token identifies the account using the user's database ID and contains the user's role. It does not contain the user's email or password.
-
-A failed login returns HTTP `401` with:
+A failed login returns HTTP `401`:
 
 ```text
 INVALID_CREDENTIALS
 ```
 
-The response is intentionally the same whether the email does not exist or the password is incorrect.
+The response is deliberately identical whether the email is unknown or the password is wrong.
 
-A protected request with a missing, expired, tampered, or otherwise invalid token returns HTTP `401` with:
+Missing, expired, tampered, or otherwise invalid bearer tokens produce:
 
 ```text
 UNAUTHENTICATED
 ```
 
+with HTTP `401`.
+
+
+### How Authentication Works
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Security as Spring Security
+    participant API as OrderFlow
+    participant DB as PostgreSQL
+
+    Client->>API: POST /api/v1/auth/login
+    API->>DB: Load user
+    API->>API: Verify password with BCrypt
+    API-->>Client: Signed JWT
+
+    Client->>Security: Request + Bearer token
+    Security->>Security: Verify signature, issuer, expiry
+    Security->>Security: Convert role to authority
+    Security->>API: Authorized request
+    API-->>Client: Response
+```
+
+The flow is straightforward:
+
+1. A customer registers and only a BCrypt hash of their password is stored.
+2. Login goes through Spring Security's `AuthenticationManager`.
+3. After successful authentication, OrderFlow creates an HS256-signed JWT containing the user ID, role, issuer, issue time, and expiry.
+4. The client sends that token in the `Authorization` header.
+5. Spring Security verifies the token before the request reaches protected application code.
+6. The role claim becomes either `ROLE_CUSTOMER` or `ROLE_ADMIN`, which is then used by the route rules.
+
+The application is stateless and does not use login sessions.
+
+Because the role is part of the signed JWT, changing a user's role in the database would not affect a token that has already been issued. A new login is required to receive a token carrying the new role.
+
+
 ## Roles and Access
 
-OrderFlow currently has two roles:
+OrderFlow has two roles:
 
 - `CUSTOMER`
 - `ADMIN`
 
-The user's role is stored in the signed JWT and is used by Spring Security when deciding whether a request is allowed.
+The main access rules are:
 
-Current access rules are:
-
-| Access | Endpoints |
+| Access | Routes |
 | --- | --- |
 | Public | `POST /api/v1/auth/register` |
 | Public | `POST /api/v1/auth/login` |
 | Public | `GET /api/v1/products` |
 | Public | `GET /api/v1/products/{id}` |
 | Public | `GET /actuator/health` |
-| Public | `/v3/api-docs`, `/v3/api-docs/**`, `/v3/api-docs.yaml`, `/swagger-ui.html`, `/swagger-ui/**` |
-| Any authenticated user | `GET /api/v1/users/me` |
-| `ADMIN` only | `/api/v1/admin/**` |
-| `CUSTOMER` only | `/api/v1/orders`, `/api/v1/orders/**` |
+| Public | `/v3/api-docs/**`, `/swagger-ui/**` |
+| Authenticated | `GET /api/v1/users/me` |
+| `ADMIN` | `/api/v1/admin/**` |
+| `CUSTOMER` | `/api/v1/orders/**` |
 
-HTTP `401` and `403` represent different situations:
+`401` and `403` have different meanings.
 
-- `401 UNAUTHENTICATED` means there is no valid authenticated user, for example because the token is missing, expired, or invalid.
-- `403 ACCESS_DENIED` means the user is authenticated but does not have permission to use the endpoint.
+`401 UNAUTHENTICATED` means the request has no valid authenticated user.
 
-For example, a `CUSTOMER` trying to access an admin route receives:
+`403 ACCESS_DENIED` means authentication succeeded, but that user does not have permission to use the route.
+
+For example:
 
 ```json
 {
@@ -1072,21 +1489,19 @@ For example, a `CUSTOMER` trying to access an admin route receives:
 }
 ```
 
-An `ADMIN` using the same route is allowed through normally.
-
-The role comes from the signed access token rather than being queried from the database on every request.
-
-If a user's role changes in the database, an access token that has already been issued continues to carry the old role until it expires. Logging in again creates a new token using the currently stored role.
-
-Access tokens currently expire after 30 minutes, and there is no API for changing account roles.
-
 ## Request IDs and Logging
 
-Every response from OrderFlow includes an `X-Request-Id` header.
+Every HTTP response includes:
 
-The ID gives a client and someone looking at the server logs a common reference for the same request. If an API call fails, the value from the response can be searched directly in the logs instead of trying to match the request by time or endpoint.
+```text
+X-Request-Id
+```
 
-Clients can provide their own request ID:
+The same ID is placed in the logging context while the request is being processed.
+
+This makes troubleshooting much easier: someone reporting an API error can provide the request ID, and that exact value can be searched in the server logs.
+
+Clients may supply their own ID:
 
 ```powershell
 $response = Invoke-WebRequest `
@@ -1097,17 +1512,17 @@ $response = Invoke-WebRequest `
 $response.Headers["X-Request-Id"]
 ```
 
-The response contains the same value:
+which returns:
 
 ```text
 demo-123
 ```
 
-A client-provided ID must be between 1 and 64 characters and can contain letters, numbers, `_`, and `-`.
+Client-provided IDs can contain letters, digits, `_`, and `-`, with a maximum length of 64 characters.
 
-When the header is missing or invalid, OrderFlow generates a UUID instead. A bad request ID does not cause an otherwise valid API call to fail, and the invalid value is not echoed back or written to the logs.
+If the header is missing or invalid, OrderFlow generates a UUID instead. The bad value is neither echoed back nor logged.
 
-Error responses also include the request ID in the body:
+Error responses include the same ID:
 
 ```json
 {
@@ -1122,98 +1537,91 @@ Error responses also include the request ID in the body:
 
 The `requestId` in the error body matches the `X-Request-Id` response header.
 
-Successful response bodies are unchanged. Their request ID is available through the header.
 
 ### Application Logs
 
-Every HTTP request produces one access log after it finishes.
+Every HTTP request produces one concise access log after it finishes.
 
-The entry contains the information that is normally useful when troubleshooting a request:
+It contains:
 
-- HTTP method
-- request path
-- response status
-- duration in milliseconds
+- method
+- path
+- status
+- duration
 
 For example:
 
 ```text
-2026-10-08T10:56:12.215+02:00  INFO ... [demo-123] ... RequestIdFilter : HTTP request eventName=http.request method=GET path=/actuator/health status=200 durationMs=4
+2026-10-08T10:56:12.215+02:00 INFO ... [demo-123] ... RequestIdFilter : HTTP request eventName=http.request method=GET path=/actuator/health status=200 durationMs=4
 ```
 
-The query string is deliberately left out. For example:
+The query string is intentionally not logged.
+
+A request to:
 
 ```text
 GET /api/v1/products?page=0&size=20
 ```
 
-is logged as:
+is logged only as:
 
 ```text
 path=/api/v1/products
 ```
 
-The request ID appears alongside the log entry. Business events written while handling the same request carry that ID as well, making it possible to follow one request through the application.
-
-OrderFlow logs a small set of business events for operations that are useful to recognize while troubleshooting:
+Useful business operations also produce structured events:
 
 | Event | Level | Meaning |
 | --- | --- | --- |
-| `user.registered` | `INFO` | A customer account was created |
-| `auth.login_failed` | `WARN` | A login attempt failed |
-| `product.created` | `INFO` | A product was created |
-| `product.updated` | `INFO` | A product was updated |
-| `inventory.adjusted` | `INFO` | Stock was manually adjusted |
-| `inventory.insufficient_stock` | `WARN` | A stock change could not be completed because there was not enough inventory |
-| `order.placed` | `INFO` | A new order was created |
-| `order.idempotent_replay` | `INFO` | A previous order placement was safely replayed |
-| `order.confirmed` | `INFO` | An order was confirmed |
-| `order.cancelled` | `INFO` | An order was cancelled |
+| `user.registered` | `INFO` | Customer account created |
+| `auth.login_failed` | `WARN` | Login failed |
+| `product.created` | `INFO` | Product created |
+| `product.updated` | `INFO` | Product updated |
+| `inventory.adjusted` | `INFO` | Stock manually changed |
+| `inventory.insufficient_stock` | `WARN` | Stock change rejected |
+| `order.placed` | `INFO` | Order created |
+| `order.idempotent_replay` | `INFO` | Existing order replayed |
+| `order.confirmed` | `INFO` | Order confirmed |
+| `order.cancelled` | `INFO` | Order cancelled |
 
-The logs use IDs and small structured fields instead of copying entire requests.
-
-For example:
+An order event might look like:
 
 ```text
 Order placed eventName=order.placed orderId=12 customerId=5
 ```
 
-`eventName` is an OrderFlow field used to identify the type of application event. It intentionally does not use the plain name `event`, because ECS already uses `event` for its own group of fields.
+`eventName` is intentionally used instead of a plain `event` field because ECS already reserves `event` as a structured field set.
 
-Sensitive values and data that are not needed for troubleshooting are intentionally kept out of the logs. That includes:
+Logs avoid values that would be risky or unnecessary to retain. The application does not intentionally log:
 
-- passwords and password hashes
+- passwords or password hashes
 - email addresses
-- JWT access tokens
+- JWTs
 - `Authorization` headers
-- request and response bodies
+- request or response bodies
 - query strings
-- idempotency keys and request hashes
+- idempotency keys
+- request fingerprints
 - inventory notes
 - cookies
 
-Unexpected server failures are logged once with their stack trace and request ID. The API response remains generic and returns `INTERNAL_ERROR` instead of exposing Java, database, or stack-trace details.
+Unexpected server errors are logged with a stack trace and request ID, while clients still receive a generic `INTERNAL_ERROR` response.
 
-The request ID makes it possible to take an error reported by a client and find the corresponding server-side failure.
+The logs are for troubleshooting, not as an audit database. PostgreSQL remains the source of truth for users, orders, inventory, and inventory movements.
 
-These logs are for operational troubleshooting rather than permanent auditing. The database remains the source of truth for users, orders, inventory, and inventory movement history. Logging also happens while a transaction is still running, so a rare failure during commit could leave a log entry for something that was ultimately rolled back.
 
 ### Structured JSON Logs
 
-The default console output is plain text because it is convenient to read during local development.
+Plain text is the default when running the application directly because it is easier to read while developing.
 
-OrderFlow can also use Spring Boot's built-in structured logging support to write the same information as ECS-style JSON. No additional logging library is needed.
-
-In PowerShell:
+Structured logging can be enabled with Spring Boot's built-in ECS support:
 
 ```powershell
 $env:LOGGING_STRUCTURED_FORMAT_CONSOLE = "ecs"
 .\mvnw.cmd spring-boot:run
 ```
 
-Application log entries are then written as JSON objects.
-
-For example:
+An access log then looks like:
 
 ```json
 {
@@ -1245,95 +1653,101 @@ For example:
 }
 ```
 
-Values such as `requestId`, `eventName`, `orderId`, and `status` remain separate fields instead of being embedded in one large message, which makes the output easier to search and process with logging tools.
+Fields such as `requestId`, `eventName`, `orderId`, and `status` remain separate JSON properties, which makes the logs easier to search or process later.
 
-To switch back to the normal text output:
+Return to normal text logging with:
 
 ```powershell
 Remove-Item Env:LOGGING_STRUCTURED_FORMAT_CONSOLE
 ```
 
+The Docker Compose `app` service enables ECS JSON automatically, so container logs can be viewed with:
+
+```powershell
+docker compose --profile app logs app
+```
+
+
 ## Testing
 
-Run the regular test suite with:
+There are two main test commands.
+
+For the fast, Docker-free suite:
 
 ```powershell
 .\mvnw.cmd test
 ```
 
-Tests named `*Test` run through Maven Surefire and do not require Docker.
+Tests named `*Test` run through Maven Surefire.
 
-They cover fast application behavior such as:
+They cover things such as:
 
-- controller validation and error handling
-- role-based authorization
+- validation and error handling
+- authorization rules
 - password validation
-- administrator bootstrap logic
-- JWT configuration and token handling
-- order total calculation
+- administrator bootstrap
+- JWT configuration
+- order calculations
 - order lifecycle rules
-- generation of order-request fingerprints used for safe retries
-- request ID validation and generation
-- access-log behavior
-- request IDs being carried through error handling
-- cleanup of request context after a request finishes
+- request fingerprinting
+- request-ID handling
+- logging behavior
 
-Run the complete verification build with:
+For the complete verification build:
 
 ```powershell
 .\mvnw.cmd clean verify
 ```
 
-Integration tests use the `*IT` naming convention.
+Integration tests use the `*IT` naming convention and run through Maven Failsafe.
 
-They run against temporary PostgreSQL databases started by Testcontainers instead of the PostgreSQL instance used for local development.
+They start temporary PostgreSQL databases using Testcontainers, so Docker must be available. They do **not** use the PostgreSQL database from the local Compose stack.
 
-Docker must therefore be running, but the local Compose database itself does not need to be started.
+The integration suite covers the full HTTP and persistence behavior, including:
 
-The integration suite covers:
-
-- the health endpoint
 - PostgreSQL constraints
 - product creation and updates
-- inventory adjustments
-- non-negative stock guarantees
-- inventory movement history
+- registration and login
+- JWT authentication
+- role authorization
+- inventory adjustments and movement history
+- non-negative inventory guarantees
 - transactional order placement
-- server-calculated order pricing
+- server-calculated pricing
 - order snapshots
-- rollback when a multi-item order cannot be completed
-- customer order ownership and isolation
-- customer order cancellation
-- administrator order confirmation and cancellation
-- stock being returned exactly once when an order is cancelled
-- cancellation after a product has been deactivated
-- administrator order lists, filtering, and details
-- optimistic locking of order status changes
-- safe retries of previously successful orders
-- rejection of an idempotency key reused for a different order
-- concurrent customers competing for limited stock
-- simultaneous requests using the same idempotency key
-- concurrent inventory adjustments without lost updates
-- request IDs on successful and error responses
-- request correlation through validation, authentication, authorization, missing resources, conflicts, and unexpected failures
-- checks that passwords, emails, access tokens, and idempotency keys do not appear in application logs
-- customer registration
-- login
-- JWT validation
-- authenticated and admin-only routes
-- administrator bootstrap
+- rollback of failed multi-item orders
+- customer ownership isolation
+- order cancellation and confirmation
+- inventory restoration
+- optimistic locking
+- idempotent retries
+- conflicting idempotency keys
+- simultaneous duplicate requests
+- customers racing for limited inventory
+- concurrent inventory adjustments
+- request IDs on success and error responses
+- logging safety
 - generated OpenAPI documentation
 - Swagger UI availability
 
-The concurrency tests use real PostgreSQL transactions rather than mocked persistence. They check the final database state instead of assuming which request or thread will win a race.
+The concurrency tests use real PostgreSQL transactions. They assert the final database state rather than assuming which request or thread should win a race.
 
-Tests use their own JWT configuration and test-only administrator credentials where needed, so the suite does not depend on secrets from the local `.env`.
+Tests provide their own JWT configuration and test-only administrator credentials, so they do not depend on local `.env` secrets.
 
-GitHub Actions runs the same verification build on Linux whenever changes are pushed to `main` or a pull request targets `main`.
+GitHub Actions runs the full verification build on Linux for pushes and pull requests targeting `main`.
+
+After the Maven build succeeds, CI also builds the Docker image:
+
+```text
+docker build --tag orderflow:ci .
+```
+
+The CI workflow does not publish the image or deploy the application.
+
 
 ## Health Check
 
-The application exposes a Spring Boot Actuator health endpoint:
+Spring Boot Actuator exposes:
 
 ```text
 GET /actuator/health
@@ -1345,7 +1759,7 @@ Check it with:
 curl.exe http://localhost:8080/actuator/health
 ```
 
-A healthy application returns a response similar to:
+A healthy application returns:
 
 ```json
 {
@@ -1357,8 +1771,152 @@ A healthy application returns a response similar to:
 }
 ```
 
-The health check also monitors PostgreSQL.
+The health check includes PostgreSQL.
 
-If the database becomes unavailable while the application is running, the endpoint reports `DOWN` and returns HTTP `503`.
+If the database becomes unavailable while the application is running, health changes to `DOWN` and the endpoint returns HTTP `503`.
 
-Only the health endpoint is currently exposed through Actuator.
+Only the health endpoint is exposed through Actuator.
+
+
+## Design Decisions
+
+
+### Modular monolith instead of microservices
+
+Order placement changes orders, order items, inventory, and inventory history together. Keeping those operations in one application and one database lets them use a normal local transaction instead of introducing distributed transaction problems.
+
+The feature packages still provide useful boundaries without requiring separate services.
+
+
+### Flyway owns the schema
+
+Database changes are explicit SQL migrations. Hibernate validates the mappings against that schema rather than changing it automatically.
+
+Once a migration has been applied, it is treated as immutable. Later schema changes go into new migrations.
+
+
+### The database is part of the correctness model
+
+Validation in Java gives clients useful API errors, but important rules are also protected by PostgreSQL constraints.
+
+Examples include unique SKUs and emails, non-negative inventory, valid status values, and valid order totals.
+
+That way, correctness does not rely entirely on one application code path behaving perfectly.
+
+
+### `BigDecimal` for money
+
+Prices and totals use Java `BigDecimal` and PostgreSQL `NUMERIC`.
+
+Floating-point values are not used for money.
+
+The server calculates totals instead of accepting them from the client.
+
+
+### Product snapshots in order items
+
+Historical orders should not change when the product catalog changes.
+
+For that reason, each order item keeps the product SKU, name, and unit price from the moment the order was created.
+
+
+### Atomic inventory updates
+
+Inventory is not implemented as:
+
+```text
+read stock
+check stock in Java
+write new stock
+```
+
+because two overlapping requests can both read the same old value.
+
+Instead, PostgreSQL performs the condition and update atomically.
+
+This prevents lost updates and overselling.
+
+Multi-item orders also process product IDs in a consistent order to reduce deadlock risk.
+
+
+### Transactions around complete business operations
+
+Creating or cancelling an order affects multiple pieces of state.
+
+Each operation has one transaction boundary so it either completes fully or leaves the database unchanged.
+
+
+### Optimistic locking for order status
+
+Order status conflicts should be uncommon, so optimistic locking is a good fit.
+
+The application does not keep a database row locked while someone decides what to do. Instead, the order version is checked when an update is written.
+
+A stale request receives a conflict instead of overwriting a newer change.
+
+
+### Database-backed idempotency
+
+Idempotency data lives with the order itself.
+
+A unique constraint on customer ID and idempotency key gives PostgreSQL the final say when two duplicate requests race each other.
+
+No Redis lock or separate locking service is required for this project.
+
+
+### Request IDs instead of distributed tracing
+
+OrderFlow is one application, not a distributed service graph.
+
+A request ID carried through the response, error body, and application logs gives enough correlation for the current architecture without adding a tracing platform.
+
+
+### Real PostgreSQL in integration tests
+
+Several important behaviors depend on PostgreSQL itself: constraints, native update queries, transactions, row locking, and concurrency.
+
+Those are tested against real PostgreSQL through Testcontainers instead of replacing the database with mocks or an in-memory substitute.
+
+
+### Non-root runtime container
+
+The Docker runtime image contains the JRE and application JAR, but not the source tree, Maven cache, or local secrets.
+
+The Java process runs under an unprivileged `orderflow` user instead of root.
+
+
+## Limitations
+
+OrderFlow intentionally stops short of trying to model an entire commercial e-commerce platform.
+
+Current limitations include:
+
+- one implicit currency; there is no currency conversion
+- no payment processing
+- no shipping workflow
+- no shopping cart
+- access tokens only; there are no refresh tokens
+- no logout or token-revocation system
+- no login/API rate limiting
+- no email verification
+- no password-reset flow
+- idempotency keys do not expire
+- no API for changing user roles
+- one application instance rather than a distributed deployment
+- console logging only; no centralized log platform
+- no application metrics or distributed tracing
+- no customer-facing frontend beyond Swagger UI and HTTP clients
+
+
+## Future Improvements
+
+- refresh tokens with a proper revocation strategy
+- rate limiting around authentication and sensitive endpoints
+- checking new passwords against a breached-password database
+- Dependabot for dependency updates
+- Prometheus metrics through Micrometer
+- OpenTelemetry tracing
+- centralized collection of the structured JSON logs
+- Redis if a real caching use case appears
+- an Nginx reverse-proxy exercise
+- payment processing as a separate domain extension
