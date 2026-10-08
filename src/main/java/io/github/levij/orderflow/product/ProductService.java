@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Locale;
 
 import org.hibernate.exception.ConstraintViolationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -21,6 +23,7 @@ import io.github.levij.orderflow.product.dto.UpdateProductRequest;
 public class ProductService {
 
 	private static final String SKU_UNIQUE_CONSTRAINT = "uk_products_sku";
+	private static final Logger log = LoggerFactory.getLogger(ProductService.class);
 
 	private final ProductRepository productRepository;
 
@@ -36,9 +39,10 @@ public class ProductService {
 			throw duplicateSku(sku);
 		}
 
-		Product product = Product.create(sku, request.name(), request.description(), request.price());
+		Product product;
 		try {
-			return productRepository.saveAndFlush(product);
+			product = productRepository.saveAndFlush(
+					Product.create(sku, request.name(), request.description(), request.price()));
 		}
 		catch (DataIntegrityViolationException ex) {
 			if (violatesSkuUniqueConstraint(ex)) {
@@ -46,12 +50,23 @@ public class ProductService {
 			}
 			throw ex;
 		}
+
+		log.atInfo()
+				.addKeyValue("eventName", "product.created")
+				.addKeyValue("productId", product.getId())
+				.log("Product created");
+		return product;
 	}
 
 	@Transactional
 	public Product updateForAdmin(Long id, UpdateProductRequest request) {
 		Product product = getForAdmin(id);
 		product.updateDetails(request.name(), request.description(), request.price(), request.active());
+		log.atInfo()
+				.addKeyValue("eventName", "product.updated")
+				.addKeyValue("productId", product.getId())
+				.addKeyValue("active", product.isActive())
+				.log("Product updated");
 		return product;
 	}
 

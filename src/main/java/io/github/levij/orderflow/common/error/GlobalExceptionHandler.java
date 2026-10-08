@@ -24,6 +24,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
+import io.github.levij.orderflow.common.web.RequestIdFilter;
+
 @RestControllerAdvice
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
@@ -109,9 +111,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 	protected ResponseEntity<Object> handleExceptionInternal(Exception ex, Object body, HttpHeaders headers,
 			HttpStatusCode statusCode, WebRequest request) {
 		ResponseEntity<Object> response = super.handleExceptionInternal(ex, body, headers, statusCode, request);
-		if (response != null && response.getBody() instanceof ProblemDetail problem
-				&& (problem.getProperties() == null || !problem.getProperties().containsKey("code"))) {
-			problem.setProperty("code", codeFor(statusCode).name());
+		if (response != null && response.getBody() instanceof ProblemDetail problem) {
+			if (problem.getProperties() == null || !problem.getProperties().containsKey("code")) {
+				problem.setProperty("code", codeFor(statusCode).name());
+			}
+			addRequestId(problem);
 		}
 		return response;
 	}
@@ -136,6 +140,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 	private static ProblemDetail problem(HttpStatus status, ErrorCode code, String detail) {
 		ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
 		problem.setProperty("code", code.name());
+		addRequestId(problem);
 		return problem;
+	}
+
+	private static void addRequestId(ProblemDetail problem) {
+		String requestId = RequestIdFilter.currentRequestId();
+		if (requestId != null) {
+			problem.setProperty("requestId", requestId);
+		}
 	}
 }

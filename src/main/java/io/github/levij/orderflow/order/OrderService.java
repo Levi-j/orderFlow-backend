@@ -9,6 +9,8 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.hibernate.exception.ConstraintViolationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -28,6 +30,7 @@ import io.github.levij.orderflow.product.ProductService;
 public class OrderService {
 
 	private static final String IDEMPOTENCY_KEY_UNIQUE_CONSTRAINT = "uk_orders_customer_idempotency_key";
+	private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
 	private final OrderRepository orderRepository;
 	private final ProductService productService;
@@ -68,7 +71,13 @@ public class OrderService {
 			inventoryService.decreaseForOrder(line.productId(), line.quantity(), orderId, customerId);
 		}
 
-		return OrderPlacement.created(findForCustomer(customerId, orderId));
+		CustomerOrder order = findForCustomer(customerId, orderId);
+		log.atInfo()
+				.addKeyValue("eventName", "order.placed")
+				.addKeyValue("orderId", order.getId())
+				.addKeyValue("customerId", customerId)
+				.log("Order placed");
+		return OrderPlacement.created(order);
 	}
 
 	@Transactional(readOnly = true)
@@ -103,6 +112,12 @@ public class OrderService {
 	public CustomerOrder confirm(Long orderId) {
 		CustomerOrder order = findWithItems(orderId);
 		order.confirm();
+		orderRepository.flush();
+		log.atInfo()
+				.addKeyValue("eventName", "order.confirmed")
+				.addKeyValue("orderId", order.getId())
+				.addKeyValue("customerId", order.getCustomerId())
+				.log("Order confirmed");
 		return order;
 	}
 
@@ -123,7 +138,14 @@ public class OrderService {
 					performedByUserId);
 		}
 
-		return findWithItems(order.getId());
+		CustomerOrder cancelled = findWithItems(order.getId());
+		log.atInfo()
+				.addKeyValue("eventName", "order.cancelled")
+				.addKeyValue("orderId", cancelled.getId())
+				.addKeyValue("customerId", cancelled.getCustomerId())
+				.addKeyValue("performedByUserId", performedByUserId)
+				.log("Order cancelled");
+		return cancelled;
 	}
 
 	private static OrderPlacement replay(CustomerOrder existing, String requestHash) {
@@ -131,6 +153,11 @@ public class OrderService {
 			throw new ConflictException(ErrorCode.IDEMPOTENCY_KEY_REUSED,
 					"The idempotency key was already used for a different order request.");
 		}
+		log.atInfo()
+				.addKeyValue("eventName", "order.idempotent_replay")
+				.addKeyValue("orderId", existing.getId())
+				.addKeyValue("customerId", existing.getCustomerId())
+				.log("Order replayed");
 		return OrderPlacement.replay(existing);
 	}
 

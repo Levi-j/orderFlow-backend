@@ -93,8 +93,8 @@ class AuthenticationApiIT {
 	void wrongPasswordAndUnknownEmailGiveIdenticalResponses() {
 		register(EMAIL, PASSWORD).then().statusCode(201);
 
-		Response wrongPassword = login(EMAIL, "this is not the right password");
-		Response unknownEmail = login("nobody@example.com", PASSWORD);
+		Response wrongPassword = login(EMAIL, "this is not the right password", "same-login-attempt");
+		Response unknownEmail = login("nobody@example.com", PASSWORD, "same-login-attempt");
 
 		for (Response response : new Response[] { wrongPassword, unknownEmail }) {
 			response.then()
@@ -246,6 +246,15 @@ class AuthenticationApiIT {
 
 	private Response login(String email, String password) {
 		return given().port(port)
+				.contentType(ContentType.JSON)
+				.body(Map.of("email", email, "password", password))
+		.when()
+				.post("/api/v1/auth/login");
+	}
+
+	private Response login(String email, String password, String requestId) {
+		return given().port(port)
+				.header("X-Request-Id", requestId)
 				.contentType(ContentType.JSON)
 				.body(Map.of("email", email, "password", password))
 		.when()

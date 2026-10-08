@@ -4,9 +4,9 @@
 
 OrderFlow is a Spring Boot backend for managing products, users, inventory, and customer orders.
 
-I built it as a portfolio project to practice the kinds of problems that show up in real backend systems: authentication, authorization, database migrations, transactional workflows, inventory consistency, API validation, integration testing, and CI.
+I built it as a portfolio project to practice the kinds of problems that show up in real backend systems: authentication, authorization, database migrations, transactional workflows, inventory consistency, API validation, integration testing, logging, and CI.
 
-The project currently supports product and inventory management, customer registration and JWT authentication, role-based access control, transactional order placement with safe retry handling, order confirmation and cancellation, administrator order management, OpenAPI documentation, PostgreSQL persistence, automated testing with Testcontainers and REST Assured, and GitHub Actions CI.
+The project currently supports product and inventory management, customer registration and JWT authentication, role-based access control, transactional order placement with safe retry handling, order confirmation and cancellation, administrator order management, request correlation and structured logging, OpenAPI documentation, PostgreSQL persistence, automated testing with Testcontainers and REST Assured, and GitHub Actions CI.
 
 ## Tech Stack
 
@@ -328,6 +328,7 @@ For example:
   "detail": "Request validation failed",
   "instance": "/api/v1/admin/products",
   "code": "VALIDATION_FAILED",
+  "requestId": "4f6c1e0a-8b2d-4d7e-9a35-2c1b7e5f9d10",
   "errors": [
     {
       "field": "name",
@@ -336,6 +337,8 @@ For example:
   ]
 }
 ```
+
+The `requestId` links the response to the server logs for the same request, which is useful when troubleshooting an error.
 
 Common responses include:
 
@@ -1064,7 +1067,8 @@ For example, a `CUSTOMER` trying to access an admin route receives:
   "title": "Forbidden",
   "detail": "You do not have permission to access this resource.",
   "instance": "/api/v1/admin/products",
-  "code": "ACCESS_DENIED"
+  "code": "ACCESS_DENIED",
+  "requestId": "9d2e7a41-3c5b-4f08-b6a1-0e8f4d2c7b93"
 }
 ```
 
@@ -1075,6 +1079,179 @@ The role comes from the signed access token rather than being queried from the d
 If a user's role changes in the database, an access token that has already been issued continues to carry the old role until it expires. Logging in again creates a new token using the currently stored role.
 
 Access tokens currently expire after 30 minutes, and there is no API for changing account roles.
+
+## Request IDs and Logging
+
+Every response from OrderFlow includes an `X-Request-Id` header.
+
+The ID gives a client and someone looking at the server logs a common reference for the same request. If an API call fails, the value from the response can be searched directly in the logs instead of trying to match the request by time or endpoint.
+
+Clients can provide their own request ID:
+
+```powershell
+$response = Invoke-WebRequest `
+    -Uri http://localhost:8080/actuator/health `
+    -Headers @{ "X-Request-Id" = "demo-123" } `
+    -UseBasicParsing
+
+$response.Headers["X-Request-Id"]
+```
+
+The response contains the same value:
+
+```text
+demo-123
+```
+
+A client-provided ID must be between 1 and 64 characters and can contain letters, numbers, `_`, and `-`.
+
+When the header is missing or invalid, OrderFlow generates a UUID instead. A bad request ID does not cause an otherwise valid API call to fail, and the invalid value is not echoed back or written to the logs.
+
+Error responses also include the request ID in the body:
+
+```json
+{
+  "status": 404,
+  "title": "Not Found",
+  "detail": "Product 999999 not found",
+  "instance": "/api/v1/products/999999",
+  "code": "RESOURCE_NOT_FOUND",
+  "requestId": "demo-123"
+}
+```
+
+The `requestId` in the error body matches the `X-Request-Id` response header.
+
+Successful response bodies are unchanged. Their request ID is available through the header.
+
+### Application Logs
+
+Every HTTP request produces one access log after it finishes.
+
+The entry contains the information that is normally useful when troubleshooting a request:
+
+- HTTP method
+- request path
+- response status
+- duration in milliseconds
+
+For example:
+
+```text
+2026-10-08T10:56:12.215+02:00  INFO ... [demo-123] ... RequestIdFilter : HTTP request eventName=http.request method=GET path=/actuator/health status=200 durationMs=4
+```
+
+The query string is deliberately left out. For example:
+
+```text
+GET /api/v1/products?page=0&size=20
+```
+
+is logged as:
+
+```text
+path=/api/v1/products
+```
+
+The request ID appears alongside the log entry. Business events written while handling the same request carry that ID as well, making it possible to follow one request through the application.
+
+OrderFlow logs a small set of business events for operations that are useful to recognize while troubleshooting:
+
+| Event | Level | Meaning |
+| --- | --- | --- |
+| `user.registered` | `INFO` | A customer account was created |
+| `auth.login_failed` | `WARN` | A login attempt failed |
+| `product.created` | `INFO` | A product was created |
+| `product.updated` | `INFO` | A product was updated |
+| `inventory.adjusted` | `INFO` | Stock was manually adjusted |
+| `inventory.insufficient_stock` | `WARN` | A stock change could not be completed because there was not enough inventory |
+| `order.placed` | `INFO` | A new order was created |
+| `order.idempotent_replay` | `INFO` | A previous order placement was safely replayed |
+| `order.confirmed` | `INFO` | An order was confirmed |
+| `order.cancelled` | `INFO` | An order was cancelled |
+
+The logs use IDs and small structured fields instead of copying entire requests.
+
+For example:
+
+```text
+Order placed eventName=order.placed orderId=12 customerId=5
+```
+
+`eventName` is an OrderFlow field used to identify the type of application event. It intentionally does not use the plain name `event`, because ECS already uses `event` for its own group of fields.
+
+Sensitive values and data that are not needed for troubleshooting are intentionally kept out of the logs. That includes:
+
+- passwords and password hashes
+- email addresses
+- JWT access tokens
+- `Authorization` headers
+- request and response bodies
+- query strings
+- idempotency keys and request hashes
+- inventory notes
+- cookies
+
+Unexpected server failures are logged once with their stack trace and request ID. The API response remains generic and returns `INTERNAL_ERROR` instead of exposing Java, database, or stack-trace details.
+
+The request ID makes it possible to take an error reported by a client and find the corresponding server-side failure.
+
+These logs are for operational troubleshooting rather than permanent auditing. The database remains the source of truth for users, orders, inventory, and inventory movement history. Logging also happens while a transaction is still running, so a rare failure during commit could leave a log entry for something that was ultimately rolled back.
+
+### Structured JSON Logs
+
+The default console output is plain text because it is convenient to read during local development.
+
+OrderFlow can also use Spring Boot's built-in structured logging support to write the same information as ECS-style JSON. No additional logging library is needed.
+
+In PowerShell:
+
+```powershell
+$env:LOGGING_STRUCTURED_FORMAT_CONSOLE = "ecs"
+.\mvnw.cmd spring-boot:run
+```
+
+Application log entries are then written as JSON objects.
+
+For example:
+
+```json
+{
+  "@timestamp": "2026-10-08T08:56:41.152615600Z",
+  "log": {
+    "level": "INFO",
+    "logger": "io.github.levij.orderflow.common.web.RequestIdFilter"
+  },
+  "process": {
+    "pid": 11404,
+    "thread": {
+      "name": "http-nio-8080-exec-3"
+    }
+  },
+  "service": {
+    "name": "orderflow",
+    "node": {}
+  },
+  "message": "HTTP request",
+  "requestId": "json-demo-123",
+  "eventName": "http.request",
+  "method": "GET",
+  "path": "/actuator/health",
+  "status": 200,
+  "durationMs": 5,
+  "ecs": {
+    "version": "8.11"
+  }
+}
+```
+
+Values such as `requestId`, `eventName`, `orderId`, and `status` remain separate fields instead of being embedded in one large message, which makes the output easier to search and process with logging tools.
+
+To switch back to the normal text output:
+
+```powershell
+Remove-Item Env:LOGGING_STRUCTURED_FORMAT_CONSOLE
+```
 
 ## Testing
 
@@ -1096,6 +1273,10 @@ They cover fast application behavior such as:
 - order total calculation
 - order lifecycle rules
 - generation of order-request fingerprints used for safe retries
+- request ID validation and generation
+- access-log behavior
+- request IDs being carried through error handling
+- cleanup of request context after a request finishes
 
 Run the complete verification build with:
 
@@ -1133,6 +1314,9 @@ The integration suite covers:
 - concurrent customers competing for limited stock
 - simultaneous requests using the same idempotency key
 - concurrent inventory adjustments without lost updates
+- request IDs on successful and error responses
+- request correlation through validation, authentication, authorization, missing resources, conflicts, and unexpected failures
+- checks that passwords, emails, access tokens, and idempotency keys do not appear in application logs
 - customer registration
 - login
 - JWT validation

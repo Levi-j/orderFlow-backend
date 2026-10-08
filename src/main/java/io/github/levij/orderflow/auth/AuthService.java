@@ -3,6 +3,8 @@ package io.github.levij.orderflow.auth;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -16,6 +18,7 @@ import io.github.levij.orderflow.user.UserService;
 public class AuthService {
 
 	private static final int BCRYPT_MAX_PASSWORD_BYTES = 72;
+	private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
 	private final AuthenticationManager authenticationManager;
 	private final UserService userService;
@@ -32,7 +35,7 @@ public class AuthService {
 		String normalizedEmail = email.toLowerCase(Locale.ROOT);
 
 		if (rawPassword.getBytes(StandardCharsets.UTF_8).length > BCRYPT_MAX_PASSWORD_BYTES) {
-			throw new InvalidCredentialsException();
+			throw loginFailed();
 		}
 
 		try {
@@ -40,10 +43,17 @@ public class AuthService {
 					UsernamePasswordAuthenticationToken.unauthenticated(normalizedEmail, rawPassword));
 		}
 		catch (BadCredentialsException ex) {
-			throw new InvalidCredentialsException();
+			throw loginFailed();
 		}
 
-		User user = userService.findByEmail(normalizedEmail).orElseThrow(InvalidCredentialsException::new);
+		User user = userService.findByEmail(normalizedEmail).orElseThrow(AuthService::loginFailed);
 		return jwtTokenService.issue(user.getId(), user.getRole());
+	}
+
+	private static InvalidCredentialsException loginFailed() {
+		log.atWarn()
+				.addKeyValue("eventName", "auth.login_failed")
+				.log("Login failed");
+		return new InvalidCredentialsException();
 	}
 }

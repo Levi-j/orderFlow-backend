@@ -26,6 +26,10 @@ orderflow:
     email: ${ORDERFLOW_ADMIN_EMAIL:}
     password: ${ORDERFLOW_ADMIN_PASSWORD:}
 
+logging:
+  pattern:
+    console: "%clr(%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}){faint} %clr(%5p) %clr(${PID}){magenta} %clr(--- %esb(){APPLICATION_NAME}[%15.15t] %esb(%X{requestId})){faint}%clr(%-40.40logger{39}){cyan} %clr(:){faint} %m %kvp{NONE}%n%wEx"
+
 management:
   endpoints:
     web:

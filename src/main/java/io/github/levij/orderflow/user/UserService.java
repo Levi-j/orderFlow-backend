@@ -4,6 +4,8 @@ import java.util.Locale;
 import java.util.Optional;
 
 import org.hibernate.exception.ConstraintViolationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -17,6 +19,7 @@ import io.github.levij.orderflow.common.error.NotFoundException;
 public class UserService {
 
 	private static final String EMAIL_UNIQUE_CONSTRAINT = "uk_users_email";
+	private static final Logger log = LoggerFactory.getLogger(UserService.class);
 
 	private final UserRepository userRepository;
 	private final PasswordEncoder passwordEncoder;
@@ -35,9 +38,9 @@ public class UserService {
 		}
 
 		String passwordHash = passwordEncoder.encode(rawPassword);
-		User user = User.registerCustomer(normalizedEmail, passwordHash);
+		User user;
 		try {
-			return userRepository.saveAndFlush(user);
+			user = userRepository.saveAndFlush(User.registerCustomer(normalizedEmail, passwordHash));
 		}
 		catch (DataIntegrityViolationException ex) {
 			if (violatesEmailUniqueConstraint(ex)) {
@@ -45,6 +48,13 @@ public class UserService {
 			}
 			throw ex;
 		}
+
+		log.atInfo()
+				.addKeyValue("eventName", "user.registered")
+				.addKeyValue("userId", user.getId())
+				.addKeyValue("role", user.getRole())
+				.log("User registered");
+		return user;
 	}
 
 	@Transactional

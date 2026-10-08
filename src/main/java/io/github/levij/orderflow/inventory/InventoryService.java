@@ -3,6 +3,8 @@ package io.github.levij.orderflow.inventory;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -14,6 +16,8 @@ import io.github.levij.orderflow.product.ProductService;
 
 @Service
 public class InventoryService {
+
+	private static final Logger log = LoggerFactory.getLogger(InventoryService.class);
 
 	private final ProductService productService;
 	private final InventoryItemRepository inventoryItemRepository;
@@ -42,7 +46,16 @@ public class InventoryService {
 		inventoryMovementRepository.save(
 				InventoryMovement.manualAdjustment(productId, quantityChange, reason, performedByUserId, note, now));
 
-		return currentQuantity(productId);
+		int quantityOnHand = currentQuantity(productId);
+		log.atInfo()
+				.addKeyValue("eventName", "inventory.adjusted")
+				.addKeyValue("productId", productId)
+				.addKeyValue("quantityChange", quantityChange)
+				.addKeyValue("reason", reason)
+				.addKeyValue("performedByUserId", performedByUserId)
+				.addKeyValue("quantityOnHand", quantityOnHand)
+				.log("Inventory adjusted");
+		return quantityOnHand;
 	}
 
 	@Transactional
@@ -80,6 +93,11 @@ public class InventoryService {
 		inventoryItemRepository.createIfMissing(productId, now);
 
 		if (inventoryItemRepository.applyChange(productId, quantityChange, now) == 0) {
+			log.atWarn()
+					.addKeyValue("eventName", "inventory.insufficient_stock")
+					.addKeyValue("productId", productId)
+					.addKeyValue("quantityChange", quantityChange)
+					.log("Insufficient stock");
 			throw new ConflictException(ErrorCode.INSUFFICIENT_STOCK, insufficientStockMessage);
 		}
 	}
