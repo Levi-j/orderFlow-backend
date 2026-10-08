@@ -44,7 +44,10 @@ class OpenApiIT {
 						"/api/v1/products",
 						"/api/v1/products/{id}",
 						"/api/v1/admin/products",
-						"/api/v1/admin/products/{id}"));
+						"/api/v1/admin/products/{id}",
+						"/api/v1/admin/inventory/{productId}",
+						"/api/v1/admin/inventory/{productId}/adjustments",
+						"/api/v1/admin/inventory/{productId}/movements"));
 	}
 
 	@Test
@@ -62,7 +65,10 @@ class OpenApiIT {
 				.body("paths.'/api/v1/users/me'.get.security[0]", hasKey("bearerAuth"))
 				.body("paths.'/api/v1/admin/products'.get.security[0]", hasKey("bearerAuth"))
 				.body("paths.'/api/v1/admin/products'.post.security[0]", hasKey("bearerAuth"))
-				.body("paths.'/api/v1/admin/products/{id}'.put.security[0]", hasKey("bearerAuth"));
+				.body("paths.'/api/v1/admin/products/{id}'.put.security[0]", hasKey("bearerAuth"))
+				.body("paths.'/api/v1/admin/inventory/{productId}'.get.security[0]", hasKey("bearerAuth"))
+				.body("paths.'/api/v1/admin/inventory/{productId}/adjustments'.post.security[0]", hasKey("bearerAuth"))
+				.body("paths.'/api/v1/admin/inventory/{productId}/movements'.get.security[0]", hasKey("bearerAuth"));
 	}
 
 	@Test
