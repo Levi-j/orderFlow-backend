@@ -29,7 +29,7 @@ class InventoryTableConstraintsIT {
 
 	@BeforeEach
 	void setUp() {
-		DatabaseCleanup.deleteInventoryProductsAndUsers(jdbcTemplate);
+		DatabaseCleanup.deleteAllData(jdbcTemplate);
 		productId = jdbcTemplate.queryForObject(
 				"INSERT INTO products (sku, name, price, created_at, updated_at) "
 						+ "VALUES ('STOCK-1', 'Stock test', 1.00, now(), now()) RETURNING id",
@@ -42,7 +42,7 @@ class InventoryTableConstraintsIT {
 
 	@AfterEach
 	void cleanUp() {
-		DatabaseCleanup.deleteInventoryProductsAndUsers(jdbcTemplate);
+		DatabaseCleanup.deleteAllData(jdbcTemplate);
 	}
 
 	@Test

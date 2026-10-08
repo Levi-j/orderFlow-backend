@@ -2,9 +2,11 @@
 
 [![CI](https://github.com/Levi-j/orderFlow-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Levi-j/orderFlow-backend/actions/workflows/ci.yml)
 
-OrderFlow is a Spring Boot backend for managing products, users, inventory, and eventually customer orders.
+OrderFlow is a Spring Boot backend for managing products, users, inventory, and customer orders.
 
-The project currently includes PostgreSQL persistence, product and inventory management, customer registration, JWT authentication, role-based access control, OpenAPI documentation, Flyway migrations, automated integration tests, health monitoring, and GitHub Actions CI.
+I built it as a portfolio project to practice the kinds of problems that show up in real backend systems: authentication, authorization, database migrations, transactional workflows, inventory consistency, API validation, integration testing, and CI.
+
+The project currently supports product and inventory management, customer registration and JWT authentication, role-based access control, transactional order placement, OpenAPI documentation, PostgreSQL persistence, automated testing with Testcontainers and REST Assured, and GitHub Actions CI.
 
 ## Tech Stack
 
@@ -82,7 +84,7 @@ To remove the stored database data as well:
 docker compose down -v
 ```
 
-Flyway manages the schema and automatically applies pending migrations when the application starts.
+Flyway manages the database schema and automatically applies pending migrations when the application starts.
 
 You can inspect the main tables with:
 
@@ -91,6 +93,8 @@ docker compose exec postgres psql -U orderflow -d orderflow -c "\d products"
 docker compose exec postgres psql -U orderflow -d orderflow -c "\d users"
 docker compose exec postgres psql -U orderflow -d orderflow -c "\d inventory_items"
 docker compose exec postgres psql -U orderflow -d orderflow -c "\d inventory_movements"
+docker compose exec postgres psql -U orderflow -d orderflow -c "\d orders"
+docker compose exec postgres psql -U orderflow -d orderflow -c "\d order_items"
 ```
 
 ## JWT Signing Secret
@@ -309,9 +313,9 @@ Setting `active` to `false` hides the product from the public API without deleti
 
 ### Validation and Errors
 
-Product create and update requests are validated before they reach the database.
+Requests are validated before they reach the database.
 
-Invalid input returns HTTP `400`. Examples include a blank name, an invalid SKU, or an invalid price.
+Invalid input returns HTTP `400`. Examples include a blank product name, an invalid SKU, invalid prices, bad order quantities, or malformed JSON.
 
 API errors use `application/problem+json` and include a stable `code` that identifies the error type.
 
@@ -343,7 +347,7 @@ Common responses include:
 | `404` | Resource not found |
 | `405` | HTTP method is not supported |
 | `406` | Requested response type is not supported |
-| `409` | Conflict with current state, such as a duplicate identifier or insufficient stock |
+| `409` | Conflict with current state, such as a duplicate identifier, unavailable product, or insufficient stock |
 | `415` | Request content type is not supported |
 | `500` | Unexpected server error |
 
@@ -354,6 +358,7 @@ Error codes currently include values such as:
 - `RESOURCE_NOT_FOUND`
 - `DUPLICATE_SKU`
 - `INSUFFICIENT_STOCK`
+- `PRODUCT_NOT_AVAILABLE`
 - `EMAIL_ALREADY_REGISTERED`
 - `INVALID_CREDENTIALS`
 - `UNAUTHENTICATED`
@@ -363,7 +368,7 @@ Internal implementation details such as stack traces, SQL statements, database c
 
 ## Inventory
 
-Inventory is kept separate from product information. A product describes what is being sold, while inventory tracks how many units are currently available.
+Inventory is stored separately from product information. Products describe what is being sold, while inventory tracks how many units are actually available.
 
 All inventory endpoints are restricted to administrators:
 
@@ -441,7 +446,7 @@ The quantity remains unchanged and no movement is recorded.
 
 PostgreSQL also enforces the non-negative stock rule as a final safety check.
 
-`ORDER_PLACED` and `ORDER_CANCELLED` exist as internal movement reasons for future order processing. They cannot be submitted through the manual inventory adjustment API.
+Orders use the same inventory system. When a customer places an order, OrderFlow records an `ORDER_PLACED` movement automatically. `ORDER_CANCELLED` is reserved for later order-lifecycle functionality and cannot be submitted through the manual adjustment API.
 
 ### Movement History
 
@@ -455,19 +460,160 @@ GET /api/v1/admin/inventory/{productId}/movements
 
 It is paginated and returned newest first.
 
-Each movement includes information such as:
+Each movement records details such as:
 
-- the quantity change
-- the reason
+- how much the quantity changed
+- why it changed
 - an optional note
-- the ID of the user who performed the change
-- the time the change happened
+- the user responsible for the change
+- the related order ID when the change came from an order
+- when the change happened
 
-Stock changes and their movement records are saved in the same database transaction. If one part fails, neither part is committed.
+The stock update and its movement record are stored in the same transaction. If one part fails, neither is committed.
 
-This keeps the current quantity and the audit history consistent.
+That keeps the current quantity and its history consistent.
 
 The inventory endpoints also appear under **Admin Inventory** in Swagger UI.
+
+## Orders
+
+Customers can place orders and view their own order history through:
+
+```text
+POST /api/v1/orders
+GET  /api/v1/orders
+GET  /api/v1/orders/{id}
+```
+
+These endpoints are for `CUSTOMER` accounts. A missing or invalid token returns HTTP `401`, while an authenticated `ADMIN` receives HTTP `403`.
+
+### Placing an Order
+
+The customer only chooses which products to buy and how many.
+
+With a customer access token stored in `$token`:
+
+```powershell
+$body = @{
+    items = @(
+        @{ productId = 1; quantity = 2 }
+        @{ productId = 2; quantity = 1 }
+    )
+} | ConvertTo-Json -Depth 3
+
+$order = Invoke-RestMethod `
+    -Uri http://localhost:8080/api/v1/orders `
+    -Method Post `
+    -Headers @{ Authorization = "Bearer $token" } `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+An order must contain between 1 and 50 items. Each quantity must be between 1 and 1000, and the same product cannot appear more than once.
+
+The request does not contain prices, totals, or a customer ID.
+
+OrderFlow gets the customer from the authenticated token, reads the current product data from the database, and calculates every line total and the final order total on the server.
+
+A successful order returns HTTP `201` and a `Location` header pointing to the new order.
+
+For example:
+
+```json
+{
+  "id": 1,
+  "customerId": 2,
+  "status": "PENDING",
+  "totalAmount": 119.79,
+  "createdAt": "2026-10-08T09:15:02.418532Z",
+  "updatedAt": "2026-10-08T09:15:02.418532Z",
+  "items": [
+    {
+      "productId": 1,
+      "productSku": "KEYBOARD-1",
+      "productName": "Keyboard",
+      "unitPrice": 49.90,
+      "quantity": 2,
+      "lineTotal": 99.80
+    },
+    {
+      "productId": 2,
+      "productSku": "MOUSE-1",
+      "productName": "Mouse",
+      "unitPrice": 19.99,
+      "quantity": 1,
+      "lineTotal": 19.99
+    }
+  ]
+}
+```
+
+New orders currently start as `PENDING`.
+
+### Transactional Order Placement
+
+Creating an order touches several parts of the database: the order itself, its items, product inventory, and inventory movement history.
+
+OrderFlow treats all of that work as one transaction.
+
+If the whole order succeeds, everything is committed together.
+
+If one product does not have enough stock, the request returns HTTP `409` with:
+
+```text
+INSUFFICIENT_STOCK
+```
+
+The entire operation is rolled back. No partial order remains, no item from the order is stored, and stock already processed for another item is restored automatically.
+
+A missing or inactive product results in:
+
+```text
+PRODUCT_NOT_AVAILABLE
+```
+
+with HTTP `409`.
+
+Products are checked before the order is written, so an unavailable product does not leave partial data behind.
+
+### Order History
+
+Order items keep a snapshot of the product at the time of purchase.
+
+Each item stores:
+
+- product ID
+- SKU
+- product name
+- unit price
+- quantity
+- line total
+
+This matters because catalog data can change.
+
+For example, if a keyboard costs `49.90` when an order is placed and an administrator later changes its price to `59.90`, the old order still shows the original `49.90`.
+
+An order behaves like a receipt: later catalog changes do not rewrite its history.
+
+### Viewing Orders
+
+`GET /api/v1/orders` returns the authenticated customer's orders as a paginated list, newest first.
+
+The list contains order summaries rather than every order item, which keeps the endpoint lightweight.
+
+For example:
+
+```text
+GET /api/v1/orders?page=0&size=20
+```
+
+`GET /api/v1/orders/{id}` returns a single order together with its item snapshots.
+
+Customers can only access their own orders.
+
+If one customer requests another customer's order ID, OrderFlow returns HTTP `404`, the same as it would for an order that does not exist. This avoids exposing whether another user's order exists.
+
+The order endpoints appear under **Orders** in Swagger UI.
 
 ## User Registration
 
@@ -505,7 +651,9 @@ A successful registration returns the user's `id`, normalized `email`, `role`, a
 
 Registration always creates a `CUSTOMER`. The role cannot be selected through the request.
 
-Emails are converted to lowercase before being stored. Addresses such as:
+Emails are converted to lowercase before being stored.
+
+Addresses such as:
 
 ```text
 Jane.Doe@Example.com
@@ -633,9 +781,10 @@ Current access rules are:
 | Public | `GET /api/v1/products` |
 | Public | `GET /api/v1/products/{id}` |
 | Public | `GET /actuator/health` |
-| Public | `GET /v3/api-docs`, `/v3/api-docs/**`, `GET /v3/api-docs.yaml`, `GET /swagger-ui.html`, `/swagger-ui/**` |
+| Public | `/v3/api-docs`, `/v3/api-docs/**`, `/v3/api-docs.yaml`, `/swagger-ui.html`, `/swagger-ui/**` |
 | Any authenticated user | `GET /api/v1/users/me` |
 | `ADMIN` only | `/api/v1/admin/**` |
+| `CUSTOMER` only | `/api/v1/orders`, `/api/v1/orders/**` |
 
 HTTP `401` and `403` represent different situations:
 
@@ -679,8 +828,9 @@ They cover fast application behavior such as:
 - password validation
 - administrator bootstrap logic
 - JWT configuration and token handling
+- order total calculation
 
-Run the full verification build with:
+Run the complete verification build with:
 
 ```powershell
 .\mvnw.cmd clean verify
@@ -688,9 +838,9 @@ Run the full verification build with:
 
 Integration tests use the `*IT` naming convention.
 
-They run against temporary PostgreSQL databases started by Testcontainers rather than the PostgreSQL instance from Docker Compose.
+They run against temporary PostgreSQL databases started by Testcontainers instead of the PostgreSQL instance used for local development.
 
-Docker must therefore be running, but the local Compose database does not need to be started.
+Docker must therefore be running, but the local Compose database itself does not need to be started.
 
 The integration suite covers:
 
@@ -700,6 +850,11 @@ The integration suite covers:
 - inventory adjustments
 - non-negative stock guarantees
 - inventory movement history
+- transactional order placement
+- server-calculated order pricing
+- order snapshots
+- rollback when a multi-item order cannot be completed
+- customer order ownership and isolation
 - customer registration
 - login
 - JWT validation

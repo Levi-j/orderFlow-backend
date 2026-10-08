@@ -1,6 +1,8 @@
 package io.github.levij.orderflow;
 
 import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItems;
@@ -47,7 +49,9 @@ class OpenApiIT {
 						"/api/v1/admin/products/{id}",
 						"/api/v1/admin/inventory/{productId}",
 						"/api/v1/admin/inventory/{productId}/adjustments",
-						"/api/v1/admin/inventory/{productId}/movements"));
+						"/api/v1/admin/inventory/{productId}/movements",
+						"/api/v1/orders",
+						"/api/v1/orders/{id}"));
 	}
 
 	@Test
@@ -68,7 +72,26 @@ class OpenApiIT {
 				.body("paths.'/api/v1/admin/products/{id}'.put.security[0]", hasKey("bearerAuth"))
 				.body("paths.'/api/v1/admin/inventory/{productId}'.get.security[0]", hasKey("bearerAuth"))
 				.body("paths.'/api/v1/admin/inventory/{productId}/adjustments'.post.security[0]", hasKey("bearerAuth"))
-				.body("paths.'/api/v1/admin/inventory/{productId}/movements'.get.security[0]", hasKey("bearerAuth"));
+				.body("paths.'/api/v1/admin/inventory/{productId}/movements'.get.security[0]", hasKey("bearerAuth"))
+				.body("paths.'/api/v1/orders'.post.security[0]", hasKey("bearerAuth"))
+				.body("paths.'/api/v1/orders'.get.security[0]", hasKey("bearerAuth"))
+				.body("paths.'/api/v1/orders/{id}'.get.security[0]", hasKey("bearerAuth"));
+	}
+
+	@Test
+	void createOrderRequestOnlyAcceptsProductIdsAndQuantities() {
+		given().port(port)
+		.when()
+				.get("/v3/api-docs")
+		.then()
+				.statusCode(200)
+				.body("paths.'/api/v1/orders'.post.requestBody.content.'application/json'.schema.'$ref'",
+						equalTo("#/components/schemas/CreateOrderRequest"))
+				.body("components.schemas.CreateOrderRequest.properties.keySet()", contains("items"))
+				.body("components.schemas.CreateOrderRequest.properties.items.items.'$ref'",
+						equalTo("#/components/schemas/OrderItemRequest"))
+				.body("components.schemas.OrderItemRequest.properties.keySet()",
+						containsInAnyOrder("productId", "quantity"));
 	}
 
 	@Test

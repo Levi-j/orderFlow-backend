@@ -37,12 +37,7 @@ public class InventoryService {
 		requireProduct(productId);
 		Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
 
-		inventoryItemRepository.createIfMissing(productId, now);
-
-		if (inventoryItemRepository.applyChange(productId, quantityChange, now) == 0) {
-			throw new ConflictException(ErrorCode.INSUFFICIENT_STOCK,
-					"There is not enough stock for this change.");
-		}
+		changeStock(productId, quantityChange, now, "There is not enough stock for this change.");
 
 		inventoryMovementRepository.save(
 				InventoryMovement.manualAdjustment(productId, quantityChange, reason, performedByUserId, note, now));
@@ -50,10 +45,30 @@ public class InventoryService {
 		return currentQuantity(productId);
 	}
 
+	@Transactional
+	public void decreaseForOrder(Long productId, int quantity, Long orderId, Long customerId) {
+		if (quantity <= 0) {
+			throw new IllegalArgumentException("Order quantity must be positive");
+		}
+		Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+
+		changeStock(productId, -quantity, now, "Insufficient stock for product " + productId + ".");
+
+		inventoryMovementRepository.save(InventoryMovement.orderPlaced(productId, quantity, orderId, customerId, now));
+	}
+
 	@Transactional(readOnly = true)
 	public Page<InventoryMovement> listMovements(Long productId, Pageable pageable) {
 		requireProduct(productId);
 		return inventoryMovementRepository.findByProductId(productId, pageable);
+	}
+
+	private void changeStock(Long productId, int quantityChange, Instant now, String insufficientStockMessage) {
+		inventoryItemRepository.createIfMissing(productId, now);
+
+		if (inventoryItemRepository.applyChange(productId, quantityChange, now) == 0) {
+			throw new ConflictException(ErrorCode.INSUFFICIENT_STOCK, insufficientStockMessage);
+		}
 	}
 
 	private void requireProduct(Long productId) {

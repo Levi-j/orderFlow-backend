@@ -19,8 +19,9 @@ public class OpenApiConfig {
 				.info(new Info()
 						.title("OrderFlow API")
 						.version("v1")
-						.description("REST API for the OrderFlow backend: product catalog, customer registration "
-								+ "and JWT authentication. Admin endpoints require a user with the ADMIN role."))
+						.description("REST API for the OrderFlow backend: product catalog, inventory, customer orders, "
+								+ "customer registration and JWT authentication. Admin endpoints require a user with "
+								+ "the ADMIN role; order endpoints require a user with the CUSTOMER role."))
 				.components(new Components()
 						.addSecuritySchemes(BEARER_AUTH, new SecurityScheme()
 								.type(SecurityScheme.Type.HTTP)

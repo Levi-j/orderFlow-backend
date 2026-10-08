@@ -1,5 +1,7 @@
 package io.github.levij.orderflow.product;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Locale;
 
 import org.hibernate.exception.ConstraintViolationException;
@@ -73,6 +75,11 @@ public class ProductService {
 	@Transactional(readOnly = true)
 	public Page<Product> listActive(Pageable pageable) {
 		return productRepository.findByActiveTrue(pageable);
+	}
+
+	@Transactional(readOnly = true)
+	public List<Product> findActiveByIds(Collection<Long> ids) {
+		return productRepository.findByIdInAndActiveTrue(ids);
 	}
 
 	private static ConflictException duplicateSku(String sku) {

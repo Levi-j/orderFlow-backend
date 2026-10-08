@@ -7,8 +7,10 @@ public final class DatabaseCleanup {
 	private DatabaseCleanup() {
 	}
 
-	public static void deleteInventoryProductsAndUsers(JdbcTemplate jdbcTemplate) {
+	public static void deleteAllData(JdbcTemplate jdbcTemplate) {
 		jdbcTemplate.update("DELETE FROM inventory_movements");
+		jdbcTemplate.update("DELETE FROM order_items");
+		jdbcTemplate.update("DELETE FROM orders");
 		jdbcTemplate.update("DELETE FROM inventory_items");
 		jdbcTemplate.update("DELETE FROM products");
 		jdbcTemplate.update("DELETE FROM users");

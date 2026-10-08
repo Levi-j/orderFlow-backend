@@ -58,7 +58,7 @@ class InventoryApiIT {
 
 	@BeforeEach
 	void setUp() {
-		DatabaseCleanup.deleteInventoryProductsAndUsers(jdbcTemplate);
+		DatabaseCleanup.deleteAllData(jdbcTemplate);
 		userService.ensureBootstrapAdmin("inventory.admin@example.com", "inventory admin password");
 		adminId = userService.findByEmail("inventory.admin@example.com").orElseThrow().getId();
 		adminToken = jwtTokenService.issue(adminId, Role.ADMIN).value();
@@ -68,7 +68,7 @@ class InventoryApiIT {
 
 	@AfterEach
 	void cleanUp() {
-		DatabaseCleanup.deleteInventoryProductsAndUsers(jdbcTemplate);
+		DatabaseCleanup.deleteAllData(jdbcTemplate);
 	}
 
 	@Test

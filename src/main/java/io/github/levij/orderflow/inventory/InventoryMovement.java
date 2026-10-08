@@ -60,6 +60,12 @@ public class InventoryMovement {
 		return new InventoryMovement(productId, quantityChange, reason, null, performedByUserId, note, createdAt);
 	}
 
+	static InventoryMovement orderPlaced(Long productId, int quantity, Long orderId, Long customerId,
+			Instant createdAt) {
+		return new InventoryMovement(productId, -quantity, MovementReason.ORDER_PLACED, orderId, customerId, null,
+				createdAt);
+	}
+
 	public Long getId() {
 		return id;
 	}
