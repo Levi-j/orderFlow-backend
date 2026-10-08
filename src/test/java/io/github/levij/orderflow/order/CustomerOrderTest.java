@@ -16,6 +16,9 @@ import io.github.levij.orderflow.common.error.ErrorCode;
 
 class CustomerOrderTest {
 
+	private static final String KEY = "order-key-1";
+	private static final String REQUEST_HASH = "a".repeat(64);
+
 	@Test
 	void lineTotalIsExactlyUnitPriceTimesQuantity() {
 		OrderItem cable = OrderItem.create(1L, "CABLE-1", "Cable", new BigDecimal("0.10"), 3);
@@ -30,13 +33,14 @@ class CustomerOrderTest {
 		OrderItem keyboard = OrderItem.create(1L, "KEYBOARD-1", "Keyboard", new BigDecimal("49.90"), 2);
 		OrderItem cable = OrderItem.create(2L, "CABLE-1", "Cable", new BigDecimal("0.10"), 3);
 
-		CustomerOrder order = CustomerOrder.place(42L, List.of(keyboard, cable));
+		CustomerOrder order = CustomerOrder.place(42L, KEY, REQUEST_HASH, List.of(keyboard, cable));
 
 		assertThat(order.getCustomerId()).isEqualTo(42L);
 		assertThat(order.getStatus()).isEqualTo(OrderStatus.PENDING);
 		assertThat(order.getTotalAmount()).isEqualByComparingTo("100.10");
 		assertThat(order.getItems()).containsExactly(keyboard, cable);
 		assertThat(order.getCreatedAt()).isNotNull().isEqualTo(order.getUpdatedAt());
+		assertThat(order.getRequestHash()).isEqualTo(REQUEST_HASH);
 	}
 
 	@ParameterizedTest(name = "PENDING + {0} -> {1}")
@@ -73,7 +77,7 @@ class CustomerOrderTest {
 	}
 
 	private static CustomerOrder orderWithStatus(OrderStatus status) {
-		CustomerOrder order = CustomerOrder.place(42L,
+		CustomerOrder order = CustomerOrder.place(42L, KEY, REQUEST_HASH,
 				List.of(OrderItem.create(1L, "KEYBOARD-1", "Keyboard", new BigDecimal("49.90"), 1)));
 		switch (status) {
 			case PENDING -> {

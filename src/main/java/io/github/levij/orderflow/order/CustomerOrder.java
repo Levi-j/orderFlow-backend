@@ -7,6 +7,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import io.github.levij.orderflow.common.error.ConflictException;
 import io.github.levij.orderflow.common.error.ErrorCode;
 import jakarta.persistence.CascadeType;
@@ -50,6 +53,13 @@ public class CustomerOrder {
 	@Column(nullable = false)
 	private long version;
 
+	@Column(name = "idempotency_key", length = 100)
+	private String idempotencyKey;
+
+	@JdbcTypeCode(SqlTypes.CHAR)
+	@Column(name = "request_hash", length = 64)
+	private String requestHash;
+
 	@OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
 	@OrderBy("id ASC")
 	private List<OrderItem> items = new ArrayList<>();
@@ -57,8 +67,10 @@ public class CustomerOrder {
 	protected CustomerOrder() {
 	}
 
-	private CustomerOrder(Long customerId, List<OrderItem> items) {
+	private CustomerOrder(Long customerId, String idempotencyKey, String requestHash, List<OrderItem> items) {
 		this.customerId = customerId;
+		this.idempotencyKey = idempotencyKey;
+		this.requestHash = requestHash;
 		this.status = OrderStatus.PENDING;
 		for (OrderItem item : items) {
 			item.attachTo(this);
@@ -71,8 +83,8 @@ public class CustomerOrder {
 		this.updatedAt = this.createdAt;
 	}
 
-	public static CustomerOrder place(Long customerId, List<OrderItem> items) {
-		return new CustomerOrder(customerId, items);
+	public static CustomerOrder place(Long customerId, String idempotencyKey, String requestHash, List<OrderItem> items) {
+		return new CustomerOrder(customerId, idempotencyKey, requestHash, items);
 	}
 
 	public void confirm() {
@@ -118,5 +130,9 @@ public class CustomerOrder {
 
 	public List<OrderItem> getItems() {
 		return Collections.unmodifiableList(items);
+	}
+
+	String getRequestHash() {
+		return requestHash;
 	}
 }

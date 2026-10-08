@@ -129,6 +129,48 @@ class OrderTableConstraintsIT {
 		assertThat(definition).endsWith("(status, created_at DESC)");
 	}
 
+	@Test
+	void idempotencyKeysAreUniquePerCustomerAndOptionalForOlderOrders() {
+		long otherCustomerId = jdbcTemplate.queryForObject(
+				"INSERT INTO users (email, password_hash, role, created_at, updated_at) "
+						+ "VALUES ('order.other@example.com', 'not-a-real-hash', 'CUSTOMER', now(), now()) RETURNING id",
+				Long.class);
+		insertOrderWithKey(customerId, "checkout-1");
+
+		assertThatThrownBy(() -> insertOrderWithKey(customerId, "checkout-1"))
+				.isInstanceOf(DataIntegrityViolationException.class);
+		assertThatCode(() -> insertOrderWithKey(otherCustomerId, "checkout-1")).doesNotThrowAnyException();
+		assertThatCode(() -> insertOrder(customerId, "PENDING", "1.00")).doesNotThrowAnyException();
+	}
+
+	@Test
+	void idempotencyColumnsHaveTheApprovedTypes() {
+		assertThat(column("idempotency_key")).containsEntry("data_type", "character varying")
+				.containsEntry("character_maximum_length", 100)
+				.containsEntry("is_nullable", "YES");
+		assertThat(column("request_hash")).containsEntry("data_type", "character")
+				.containsEntry("character_maximum_length", 64)
+				.containsEntry("is_nullable", "YES");
+
+		assertThat(jdbcTemplate.queryForObject(
+				"SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'uk_orders_customer_idempotency_key'",
+				String.class)).isEqualTo("UNIQUE (customer_id, idempotency_key)");
+	}
+
+	private Map<String, Object> column(String name) {
+		return jdbcTemplate.queryForMap(
+				"SELECT data_type, character_maximum_length, is_nullable FROM information_schema.columns "
+						+ "WHERE table_name = 'orders' AND column_name = ?",
+				name);
+	}
+
+	private long insertOrderWithKey(long customerId, String idempotencyKey) {
+		return jdbcTemplate.queryForObject(
+				"INSERT INTO orders (customer_id, status, total_amount, created_at, updated_at, idempotency_key, request_hash) "
+						+ "VALUES (?, 'PENDING', 1.00, now(), now(), ?, ?) RETURNING id",
+				Long.class, customerId, idempotencyKey, "0".repeat(64));
+	}
+
 	private long insertOrder(long customerId, String status, String totalAmount) {
 		return jdbcTemplate.queryForObject(
 				"INSERT INTO orders (customer_id, status, total_amount, created_at, updated_at) "

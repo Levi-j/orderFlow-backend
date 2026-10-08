@@ -13,6 +13,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -370,6 +371,7 @@ class OrderLifecycleApiIT {
 	@SafeVarargs
 	private long placeOrder(String token, Map<String, Object>... items) {
 		return withToken(token)
+				.header("Idempotency-Key", "order-" + UUID.randomUUID())
 				.contentType(ContentType.JSON)
 				.body(Map.of("items", List.of(items)))
 		.when()

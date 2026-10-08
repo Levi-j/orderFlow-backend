@@ -122,6 +122,27 @@ class OpenApiIT {
 	}
 
 	@Test
+	void orderPlacementDocumentsTheRequiredIdempotencyKey() {
+		String idempotencyKey = "paths.'/api/v1/orders'.post.parameters.find { it.name == 'Idempotency-Key' }";
+
+		given().port(port)
+		.when()
+				.get("/v3/api-docs")
+		.then()
+				.statusCode(200)
+				.body(idempotencyKey + ".'in'", equalTo("header"))
+				.body(idempotencyKey + ".required", equalTo(true))
+				.body(idempotencyKey + ".schema.type", equalTo("string"))
+				.body(idempotencyKey + ".schema.minLength", equalTo(1))
+				.body(idempotencyKey + ".schema.maxLength", equalTo(100))
+				.body(idempotencyKey + ".schema.pattern", equalTo("^[A-Za-z0-9_-]{1,100}$"))
+				.body("paths.'/api/v1/orders'.post.responses.'201'.headers.'Idempotent-Replayed'.schema.type",
+						equalTo("string"))
+				.body("paths.'/api/v1/orders'.post.responses.'201'.content.'*/*'.schema.'$ref'",
+						equalTo("#/components/schemas/OrderResponse"));
+	}
+
+	@Test
 	void swaggerUiLoadsWithoutAuthentication() {
 		given().port(port)
 		.when()

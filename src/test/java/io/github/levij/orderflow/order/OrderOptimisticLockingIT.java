@@ -73,8 +73,8 @@ class OrderOptimisticLockingIT {
 		productId = productService.create(new CreateProductRequest("LOCK-1", "Locked product", null,
 				new BigDecimal("5.00"))).getId();
 		inventoryService.adjust(productId, 10, MovementReason.RESTOCK, null, adminId);
-		orderId = orderService.placeOrder(customerId,
-				new CreateOrderRequest(List.of(new OrderItemRequest(productId, 4)))).getId();
+		orderId = orderService.placeOrder(customerId, "locking-order-1",
+				new CreateOrderRequest(List.of(new OrderItemRequest(productId, 4)))).order().getId();
 	}
 
 	@AfterEach

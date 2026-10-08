@@ -14,6 +14,7 @@ import static org.hamcrest.Matchers.notNullValue;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.LongStream;
 
 import org.junit.jupiter.api.AfterEach;
@@ -378,6 +379,7 @@ class OrderApiIT {
 
 	private Response placeOrder(String token, Object body) {
 		return withToken(token)
+				.header("Idempotency-Key", "order-" + UUID.randomUUID())
 				.contentType(ContentType.JSON)
 				.body(body)
 		.when()

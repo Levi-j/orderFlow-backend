@@ -4,9 +4,12 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.hibernate.exception.ConstraintViolationException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -24,6 +27,8 @@ import io.github.levij.orderflow.product.ProductService;
 @Service
 public class OrderService {
 
+	private static final String IDEMPOTENCY_KEY_UNIQUE_CONSTRAINT = "uk_orders_customer_idempotency_key";
+
 	private final OrderRepository orderRepository;
 	private final ProductService productService;
 	private final InventoryService inventoryService;
@@ -36,7 +41,15 @@ public class OrderService {
 	}
 
 	@Transactional
-	public CustomerOrder placeOrder(Long customerId, CreateOrderRequest request) {
+	public OrderPlacement placeOrder(Long customerId, String idempotencyKey, CreateOrderRequest request) {
+		String requestHash = RequestFingerprint.of(request.items());
+
+		Optional<CustomerOrder> existing =
+				orderRepository.findWithItemsByCustomerIdAndIdempotencyKey(customerId, idempotencyKey);
+		if (existing.isPresent()) {
+			return replay(existing.get(), requestHash);
+		}
+
 		List<OrderItemRequest> lines = request.items().stream()
 				.sorted(Comparator.comparing(OrderItemRequest::productId))
 				.toList();
@@ -49,13 +62,13 @@ public class OrderService {
 					line.quantity()));
 		}
 
-		Long orderId = orderRepository.saveAndFlush(CustomerOrder.place(customerId, items)).getId();
+		Long orderId = insert(CustomerOrder.place(customerId, idempotencyKey, requestHash, items));
 
 		for (OrderItemRequest line : lines) {
 			inventoryService.decreaseForOrder(line.productId(), line.quantity(), orderId, customerId);
 		}
 
-		return findForCustomer(customerId, orderId);
+		return OrderPlacement.created(findForCustomer(customerId, orderId));
 	}
 
 	@Transactional(readOnly = true)
@@ -111,6 +124,38 @@ public class OrderService {
 		}
 
 		return findWithItems(order.getId());
+	}
+
+	private static OrderPlacement replay(CustomerOrder existing, String requestHash) {
+		if (!existing.getRequestHash().equals(requestHash)) {
+			throw new ConflictException(ErrorCode.IDEMPOTENCY_KEY_REUSED,
+					"The idempotency key was already used for a different order request.");
+		}
+		return OrderPlacement.replay(existing);
+	}
+
+	private Long insert(CustomerOrder order) {
+		try {
+			return orderRepository.saveAndFlush(order).getId();
+		}
+		catch (DataIntegrityViolationException ex) {
+			if (violatesIdempotencyKeyConstraint(ex)) {
+				throw new ConflictException(ErrorCode.IDEMPOTENCY_KEY_IN_USE,
+						"Another request with this idempotency key was being processed at the same time. "
+								+ "Retry the request.");
+			}
+			throw ex;
+		}
+	}
+
+	private static boolean violatesIdempotencyKeyConstraint(DataIntegrityViolationException ex) {
+		for (Throwable cause = ex.getCause(); cause != null; cause = cause.getCause()) {
+			if (cause instanceof ConstraintViolationException violation
+					&& IDEMPOTENCY_KEY_UNIQUE_CONSTRAINT.equalsIgnoreCase(violation.getConstraintName())) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private Map<Long, Product> loadOrderableProducts(List<OrderItemRequest> lines) {

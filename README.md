@@ -6,7 +6,7 @@ OrderFlow is a Spring Boot backend for managing products, users, inventory, and 
 
 I built it as a portfolio project to practice the kinds of problems that show up in real backend systems: authentication, authorization, database migrations, transactional workflows, inventory consistency, API validation, integration testing, and CI.
 
-The project currently supports product and inventory management, customer registration and JWT authentication, role-based access control, transactional order placement, order confirmation and cancellation, administrator order management, OpenAPI documentation, PostgreSQL persistence, automated testing with Testcontainers and REST Assured, and GitHub Actions CI.
+The project currently supports product and inventory management, customer registration and JWT authentication, role-based access control, transactional order placement with safe retry handling, order confirmation and cancellation, administrator order management, OpenAPI documentation, PostgreSQL persistence, automated testing with Testcontainers and REST Assured, and GitHub Actions CI.
 
 ## Tech Stack
 
@@ -315,7 +315,7 @@ Setting `active` to `false` hides the product from the public API without deleti
 
 Requests are validated before they reach the database.
 
-Invalid input returns HTTP `400`. Examples include a blank product name, an invalid SKU, invalid prices, bad order quantities, or malformed JSON.
+Invalid input returns HTTP `400`. Examples include a blank product name, an invalid SKU, invalid prices, bad order quantities, malformed JSON, or a missing or invalid idempotency key when placing an order.
 
 API errors use `application/problem+json` and include a stable `code` that identifies the error type.
 
@@ -341,13 +341,13 @@ Common responses include:
 
 | Status | Meaning |
 | --- | --- |
-| `400` | Invalid request data or malformed JSON |
+| `400` | Invalid request data, malformed JSON, or a missing or invalid required value |
 | `401` | Login failed, or authentication is missing or invalid |
 | `403` | Authenticated, but not allowed to use the endpoint |
 | `404` | Resource not found |
 | `405` | HTTP method is not supported |
 | `406` | Requested response type is not supported |
-| `409` | Conflict with current state, such as a duplicate identifier, unavailable product, insufficient stock, an invalid order transition, or a concurrent update |
+| `409` | Conflict with current state, such as a duplicate identifier, unavailable product, insufficient stock, an invalid order transition, a concurrent update, or an idempotency conflict |
 | `415` | Request content type is not supported |
 | `500` | Unexpected server error |
 
@@ -361,6 +361,8 @@ Error codes currently include values such as:
 - `PRODUCT_NOT_AVAILABLE`
 - `INVALID_STATUS_TRANSITION`
 - `CONCURRENT_MODIFICATION`
+- `IDEMPOTENCY_KEY_REUSED`
+- `IDEMPOTENCY_KEY_IN_USE`
 - `EMAIL_ALREADY_REGISTERED`
 - `INVALID_CREDENTIALS`
 - `UNAUTHENTICATED`
@@ -506,13 +508,20 @@ $body = @{
     )
 } | ConvertTo-Json -Depth 3
 
+$idempotencyKey = [guid]::NewGuid().ToString()
+
 $order = Invoke-RestMethod `
     -Uri http://localhost:8080/api/v1/orders `
     -Method Post `
-    -Headers @{ Authorization = "Bearer $token" } `
+    -Headers @{
+        Authorization = "Bearer $token"
+        "Idempotency-Key" = $idempotencyKey
+    } `
     -ContentType "application/json" `
     -Body $body
 ```
+
+Every new order needs an `Idempotency-Key`. The key identifies that particular attempt to place an order and lets the client retry safely if it is unsure whether the first request succeeded.
 
 An order must contain between 1 and 50 items. Each quantity must be between 1 and 1000, and the same product cannot appear more than once.
 
@@ -580,6 +589,101 @@ PRODUCT_NOT_AVAILABLE
 with HTTP `409`.
 
 Products are checked before the order is written, so an unavailable product does not leave partial data behind.
+
+Inventory changes are also safe when several orders arrive at the same time. The stock update is performed directly by PostgreSQL and only succeeds when enough units remain.
+
+For example, if three units are left and eight customers try to buy one at the same time, only three orders can succeed. The remaining requests receive `INSUFFICIENT_STOCK`, and inventory never becomes negative.
+
+### Safe Retries
+
+A network problem can happen at an awkward moment: a customer sends an order, the server processes it, but the connection disappears before the response reaches the client.
+
+Simply sending the order again would normally be risky because the customer might accidentally create the same order twice.
+
+OrderFlow avoids that problem with the `Idempotency-Key` header.
+
+A client creates one key for a new order and keeps using that same key when retrying that order. A different new order should use a new key.
+
+The key must be between 1 and 100 characters and can contain only:
+
+```text
+A-Z
+a-z
+0-9
+_
+-
+```
+
+Keys are case-sensitive.
+
+They are also scoped to the authenticated customer. Two different customers can use the same text as their key without interfering with each other.
+
+A missing or invalid key returns HTTP `400` with:
+
+```text
+MALFORMED_REQUEST
+```
+
+If a customer sends a key that has already been used with the same products and quantities, OrderFlow recognizes the request as a retry.
+
+It does not create another order, remove stock again, or write another `ORDER_PLACED` movement. Instead, it returns HTTP `201` with the original order ID and `Location`.
+
+The replay response also includes:
+
+```text
+Idempotent-Replayed: true
+```
+
+The order of items in the request does not matter. For example, `[product 1, product 2]` and `[product 2, product 1]` are treated as the same order request when the product IDs and quantities are the same.
+
+Retrying the example above can be done with the same `$idempotencyKey` and `$body`:
+
+```powershell
+$retry = Invoke-WebRequest `
+    -Uri http://localhost:8080/api/v1/orders `
+    -Method Post `
+    -Headers @{
+        Authorization = "Bearer $token"
+        "Idempotency-Key" = $idempotencyKey
+    } `
+    -ContentType "application/json" `
+    -Body $body `
+    -UseBasicParsing
+
+$retry.StatusCode
+$retry.Headers["Idempotent-Replayed"]
+```
+
+The expected result is:
+
+```text
+201
+true
+```
+
+If the same key is reused with different products or quantities, OrderFlow assumes the client is trying to use one key for two different orders and rejects the request with HTTP `409`:
+
+```text
+IDEMPOTENCY_KEY_REUSED
+```
+
+A replay represents the result of the original placement request. If the order has since been confirmed or cancelled, the replay still returns the original placement response. The `Location` can be followed to read the order's current state.
+
+There is one additional case when two copies of the same request arrive almost simultaneously.
+
+Both requests may begin before either one has finished. PostgreSQL guarantees that only one of them can create an order for that customer and key. The other request can receive HTTP `409` with:
+
+```text
+IDEMPOTENCY_KEY_IN_USE
+```
+
+That response means another request won the race. The client can retry with the same key; once the successful request has committed, the retry returns the existing order normally.
+
+The losing request does not remove any stock.
+
+If the original order attempt fails completely—for example because there is not enough stock—the key is not permanently consumed. The failed transaction is rolled back, and the customer can retry the same request with the same key later.
+
+Idempotency keys currently do not expire.
 
 ### Order History
 
@@ -991,6 +1095,7 @@ They cover fast application behavior such as:
 - JWT configuration and token handling
 - order total calculation
 - order lifecycle rules
+- generation of order-request fingerprints used for safe retries
 
 Run the complete verification build with:
 
@@ -1023,6 +1128,11 @@ The integration suite covers:
 - cancellation after a product has been deactivated
 - administrator order lists, filtering, and details
 - optimistic locking of order status changes
+- safe retries of previously successful orders
+- rejection of an idempotency key reused for a different order
+- concurrent customers competing for limited stock
+- simultaneous requests using the same idempotency key
+- concurrent inventory adjustments without lost updates
 - customer registration
 - login
 - JWT validation
@@ -1030,6 +1140,8 @@ The integration suite covers:
 - administrator bootstrap
 - generated OpenAPI documentation
 - Swagger UI availability
+
+The concurrency tests use real PostgreSQL transactions rather than mocked persistence. They check the final database state instead of assuming which request or thread will win a race.
 
 Tests use their own JWT configuration and test-only administrator credentials where needed, so the suite does not depend on secrets from the local `.env`.
 
