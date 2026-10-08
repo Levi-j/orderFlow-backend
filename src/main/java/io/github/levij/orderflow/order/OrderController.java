@@ -26,7 +26,7 @@ import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 
-@Tag(name = "Orders", description = "Place orders and view your own orders. Requires a token for a user with the CUSTOMER role.")
+@Tag(name = "Orders", description = "Place, view and cancel your own orders. Requires a token for a user with the CUSTOMER role.")
 @SecurityRequirement(name = OpenApiConfig.BEARER_AUTH)
 @RestController
 @RequestMapping("/api/v1/orders")
@@ -59,6 +59,11 @@ public class OrderController {
 	@GetMapping("/{id}")
 	public OrderResponse get(@PathVariable Long id, @AuthenticationPrincipal Jwt jwt) {
 		return OrderResponse.from(orderService.getForCustomer(customerId(jwt), id));
+	}
+
+	@PostMapping("/{id}/cancel")
+	public OrderResponse cancel(@PathVariable Long id, @AuthenticationPrincipal Jwt jwt) {
+		return OrderResponse.from(orderService.cancelForCustomer(customerId(jwt), id));
 	}
 
 	private static Long customerId(Jwt jwt) {

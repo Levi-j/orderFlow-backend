@@ -11,6 +11,11 @@ interface OrderRepository extends JpaRepository<CustomerOrder, Long> {
 
 	Page<CustomerOrder> findByCustomerId(Long customerId, Pageable pageable);
 
+	Page<CustomerOrder> findByStatus(OrderStatus status, Pageable pageable);
+
 	@EntityGraph(attributePaths = "items")
 	Optional<CustomerOrder> findWithItemsByIdAndCustomerId(Long id, Long customerId);
+
+	@EntityGraph(attributePaths = "items")
+	Optional<CustomerOrder> findWithItemsById(Long id);
 }

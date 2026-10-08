@@ -6,6 +6,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.core.PropertyReferenceException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -63,6 +64,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 	@ExceptionHandler(AuthenticationServiceException.class)
 	ProblemDetail handleAuthenticationServiceFailure(AuthenticationServiceException ex) {
 		return handleUnexpected(ex);
+	}
+
+	@ExceptionHandler(OptimisticLockingFailureException.class)
+	ProblemDetail handleOptimisticLockingFailure(OptimisticLockingFailureException ex) {
+		return problem(HttpStatus.CONFLICT, ErrorCode.CONCURRENT_MODIFICATION,
+				"The resource was changed by another request. Reload it and try again.");
 	}
 
 	@ExceptionHandler(DataIntegrityViolationException.class)

@@ -51,7 +51,12 @@ class OpenApiIT {
 						"/api/v1/admin/inventory/{productId}/adjustments",
 						"/api/v1/admin/inventory/{productId}/movements",
 						"/api/v1/orders",
-						"/api/v1/orders/{id}"));
+						"/api/v1/orders/{id}",
+						"/api/v1/orders/{id}/cancel",
+						"/api/v1/admin/orders",
+						"/api/v1/admin/orders/{id}",
+						"/api/v1/admin/orders/{id}/confirm",
+						"/api/v1/admin/orders/{id}/cancel"));
 	}
 
 	@Test
@@ -75,7 +80,29 @@ class OpenApiIT {
 				.body("paths.'/api/v1/admin/inventory/{productId}/movements'.get.security[0]", hasKey("bearerAuth"))
 				.body("paths.'/api/v1/orders'.post.security[0]", hasKey("bearerAuth"))
 				.body("paths.'/api/v1/orders'.get.security[0]", hasKey("bearerAuth"))
-				.body("paths.'/api/v1/orders/{id}'.get.security[0]", hasKey("bearerAuth"));
+				.body("paths.'/api/v1/orders/{id}'.get.security[0]", hasKey("bearerAuth"))
+				.body("paths.'/api/v1/orders/{id}/cancel'.post.security[0]", hasKey("bearerAuth"))
+				.body("paths.'/api/v1/admin/orders'.get.security[0]", hasKey("bearerAuth"))
+				.body("paths.'/api/v1/admin/orders/{id}'.get.security[0]", hasKey("bearerAuth"))
+				.body("paths.'/api/v1/admin/orders/{id}/confirm'.post.security[0]", hasKey("bearerAuth"))
+				.body("paths.'/api/v1/admin/orders/{id}/cancel'.post.security[0]", hasKey("bearerAuth"));
+	}
+
+	@Test
+	void orderLifecycleOperationsDocumentOnlyRealInputs() {
+		given().port(port)
+		.when()
+				.get("/v3/api-docs")
+		.then()
+				.statusCode(200)
+				.body("paths.'/api/v1/admin/orders'.get.parameters.name",
+						containsInAnyOrder("status", "page", "size", "sort"))
+				.body("paths.'/api/v1/admin/orders'.get.parameters.find { it.name == 'status' }.required", equalTo(false))
+				.body("paths.'/api/v1/admin/orders'.get.parameters.find { it.name == 'status' }.schema.enum",
+						contains("PENDING", "CONFIRMED", "CANCELLED"))
+				.body("paths.'/api/v1/orders/{id}/cancel'.post.parameters.name", contains("id"))
+				.body("paths.'/api/v1/admin/orders/{id}/confirm'.post.parameters.name", contains("id"))
+				.body("paths.'/api/v1/admin/orders/{id}/cancel'.post.parameters.name", contains("id"));
 	}
 
 	@Test

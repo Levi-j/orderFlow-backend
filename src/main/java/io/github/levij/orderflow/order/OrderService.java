@@ -68,6 +68,51 @@ public class OrderService {
 		return findForCustomer(customerId, orderId);
 	}
 
+	@Transactional
+	public CustomerOrder cancelForCustomer(Long customerId, Long orderId) {
+		return cancel(findForCustomer(customerId, orderId), customerId);
+	}
+
+	@Transactional(readOnly = true)
+	public Page<CustomerOrder> listForAdmin(OrderStatus status, Pageable pageable) {
+		if (status == null) {
+			return orderRepository.findAll(pageable);
+		}
+		return orderRepository.findByStatus(status, pageable);
+	}
+
+	@Transactional(readOnly = true)
+	public CustomerOrder getForAdmin(Long orderId) {
+		return findWithItems(orderId);
+	}
+
+	@Transactional
+	public CustomerOrder confirm(Long orderId) {
+		CustomerOrder order = findWithItems(orderId);
+		order.confirm();
+		return order;
+	}
+
+	@Transactional
+	public CustomerOrder cancelForAdmin(Long orderId, Long adminId) {
+		return cancel(findWithItems(orderId), adminId);
+	}
+
+	private CustomerOrder cancel(CustomerOrder order, Long performedByUserId) {
+		order.cancel();
+		orderRepository.flush();
+
+		List<OrderItem> items = order.getItems().stream()
+				.sorted(Comparator.comparing(OrderItem::getProductId))
+				.toList();
+		for (OrderItem item : items) {
+			inventoryService.restoreForCancelledOrder(item.getProductId(), item.getQuantity(), order.getId(),
+					performedByUserId);
+		}
+
+		return findWithItems(order.getId());
+	}
+
 	private Map<Long, Product> loadOrderableProducts(List<OrderItemRequest> lines) {
 		List<Long> productIds = lines.stream().map(OrderItemRequest::productId).toList();
 		Map<Long, Product> products = productService.findActiveByIds(productIds).stream()
@@ -84,6 +129,15 @@ public class OrderService {
 
 	private CustomerOrder findForCustomer(Long customerId, Long orderId) {
 		return orderRepository.findWithItemsByIdAndCustomerId(orderId, customerId)
-				.orElseThrow(() -> new NotFoundException("Order " + orderId + " not found"));
+				.orElseThrow(() -> orderNotFound(orderId));
+	}
+
+	private CustomerOrder findWithItems(Long orderId) {
+		return orderRepository.findWithItemsById(orderId)
+				.orElseThrow(() -> orderNotFound(orderId));
+	}
+
+	private static NotFoundException orderNotFound(Long orderId) {
+		return new NotFoundException("Order " + orderId + " not found");
 	}
 }

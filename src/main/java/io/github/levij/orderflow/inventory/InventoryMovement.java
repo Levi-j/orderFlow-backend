@@ -66,6 +66,12 @@ public class InventoryMovement {
 				createdAt);
 	}
 
+	static InventoryMovement orderCancelled(Long productId, int quantity, Long orderId, Long performedByUserId,
+			Instant createdAt) {
+		return new InventoryMovement(productId, quantity, MovementReason.ORDER_CANCELLED, orderId, performedByUserId,
+				null, createdAt);
+	}
+
 	public Long getId() {
 		return id;
 	}

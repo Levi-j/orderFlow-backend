@@ -57,6 +57,19 @@ public class InventoryService {
 		inventoryMovementRepository.save(InventoryMovement.orderPlaced(productId, quantity, orderId, customerId, now));
 	}
 
+	@Transactional
+	public void restoreForCancelledOrder(Long productId, int quantity, Long orderId, Long performedByUserId) {
+		if (quantity <= 0) {
+			throw new IllegalArgumentException("Restored quantity must be positive");
+		}
+		Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+
+		changeStock(productId, quantity, now, "Stock for product " + productId + " could not be restored.");
+
+		inventoryMovementRepository.save(
+				InventoryMovement.orderCancelled(productId, quantity, orderId, performedByUserId, now));
+	}
+
 	@Transactional(readOnly = true)
 	public Page<InventoryMovement> listMovements(Long productId, Pageable pageable) {
 		requireProduct(productId);

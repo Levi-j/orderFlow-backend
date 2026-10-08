@@ -6,7 +6,7 @@ OrderFlow is a Spring Boot backend for managing products, users, inventory, and 
 
 I built it as a portfolio project to practice the kinds of problems that show up in real backend systems: authentication, authorization, database migrations, transactional workflows, inventory consistency, API validation, integration testing, and CI.
 
-The project currently supports product and inventory management, customer registration and JWT authentication, role-based access control, transactional order placement, OpenAPI documentation, PostgreSQL persistence, automated testing with Testcontainers and REST Assured, and GitHub Actions CI.
+The project currently supports product and inventory management, customer registration and JWT authentication, role-based access control, transactional order placement, order confirmation and cancellation, administrator order management, OpenAPI documentation, PostgreSQL persistence, automated testing with Testcontainers and REST Assured, and GitHub Actions CI.
 
 ## Tech Stack
 
@@ -347,7 +347,7 @@ Common responses include:
 | `404` | Resource not found |
 | `405` | HTTP method is not supported |
 | `406` | Requested response type is not supported |
-| `409` | Conflict with current state, such as a duplicate identifier, unavailable product, or insufficient stock |
+| `409` | Conflict with current state, such as a duplicate identifier, unavailable product, insufficient stock, an invalid order transition, or a concurrent update |
 | `415` | Request content type is not supported |
 | `500` | Unexpected server error |
 
@@ -359,6 +359,8 @@ Error codes currently include values such as:
 - `DUPLICATE_SKU`
 - `INSUFFICIENT_STOCK`
 - `PRODUCT_NOT_AVAILABLE`
+- `INVALID_STATUS_TRANSITION`
+- `CONCURRENT_MODIFICATION`
 - `EMAIL_ALREADY_REGISTERED`
 - `INVALID_CREDENTIALS`
 - `UNAUTHENTICATED`
@@ -446,7 +448,9 @@ The quantity remains unchanged and no movement is recorded.
 
 PostgreSQL also enforces the non-negative stock rule as a final safety check.
 
-Orders use the same inventory system. When a customer places an order, OrderFlow records an `ORDER_PLACED` movement automatically. `ORDER_CANCELLED` is reserved for later order-lifecycle functionality and cannot be submitted through the manual adjustment API.
+Orders use the same inventory system. Placing an order creates an `ORDER_PLACED` movement automatically. Cancelling an order puts the reserved stock back and creates an `ORDER_CANCELLED` movement.
+
+Those two movement reasons are created by the order workflow itself and cannot be submitted manually through the inventory adjustment API.
 
 ### Movement History
 
@@ -477,12 +481,13 @@ The inventory endpoints also appear under **Admin Inventory** in Swagger UI.
 
 ## Orders
 
-Customers can place orders and view their own order history through:
+Customers can place orders, view their own order history, and cancel pending orders through:
 
 ```text
 POST /api/v1/orders
 GET  /api/v1/orders
 GET  /api/v1/orders/{id}
+POST /api/v1/orders/{id}/cancel
 ```
 
 These endpoints are for `CUSTOMER` accounts. A missing or invalid token returns HTTP `401`, while an authenticated `ADMIN` receives HTTP `403`.
@@ -548,23 +553,23 @@ For example:
 }
 ```
 
-New orders currently start as `PENDING`.
+New orders start as `PENDING`.
 
 ### Transactional Order Placement
 
-Creating an order touches several parts of the database: the order itself, its items, product inventory, and inventory movement history.
+Creating an order touches several parts of the database: the order itself, its items, inventory, and inventory movement history.
 
-OrderFlow treats all of that work as one transaction.
+OrderFlow treats all of that as one transaction.
 
-If the whole order succeeds, everything is committed together.
+If the order succeeds, everything is committed together.
 
-If one product does not have enough stock, the request returns HTTP `409` with:
+If one of the products does not have enough stock, the request returns HTTP `409` with:
 
 ```text
 INSUFFICIENT_STOCK
 ```
 
-The entire operation is rolled back. No partial order remains, no item from the order is stored, and stock already processed for another item is restored automatically.
+The whole transaction is rolled back. No partial order is left behind, no partial set of order items is stored, and stock that had already been processed for an earlier item is restored automatically by the rollback.
 
 A missing or inactive product results in:
 
@@ -578,7 +583,7 @@ Products are checked before the order is written, so an unavailable product does
 
 ### Order History
 
-Order items keep a snapshot of the product at the time of purchase.
+Order items keep a snapshot of the product at the time the order is placed.
 
 Each item stores:
 
@@ -589,11 +594,11 @@ Each item stores:
 - quantity
 - line total
 
-This matters because catalog data can change.
+This matters because the product catalog can change later.
 
 For example, if a keyboard costs `49.90` when an order is placed and an administrator later changes its price to `59.90`, the old order still shows the original `49.90`.
 
-An order behaves like a receipt: later catalog changes do not rewrite its history.
+An order therefore behaves more like a receipt than a live view of the product catalog. Later changes do not rewrite what the customer originally bought.
 
 ### Viewing Orders
 
@@ -611,9 +616,165 @@ GET /api/v1/orders?page=0&size=20
 
 Customers can only access their own orders.
 
-If one customer requests another customer's order ID, OrderFlow returns HTTP `404`, the same as it would for an order that does not exist. This avoids exposing whether another user's order exists.
+If one customer requests another customer's order ID, OrderFlow returns HTTP `404`, the same as it would for an order that does not exist.
 
-The order endpoints appear under **Orders** in Swagger UI.
+This avoids revealing whether another customer's order exists.
+
+### Order Status
+
+Every order is in one of three states:
+
+- `PENDING` — the order has been placed and is waiting for a decision
+- `CONFIRMED` — an administrator has accepted the order
+- `CANCELLED` — the order was cancelled by the customer or an administrator
+
+Only a `PENDING` order can change state.
+
+The allowed transitions are:
+
+| Current status | Confirm | Cancel |
+| --- | --- | --- |
+| `PENDING` | becomes `CONFIRMED` by an administrator | becomes `CANCELLED` by the customer or an administrator |
+| `CONFIRMED` | rejected | rejected |
+| `CANCELLED` | rejected | rejected |
+
+`CONFIRMED` and `CANCELLED` are final states. There is no reopen operation and no way to move an order back to `PENDING`.
+
+Trying to perform a transition that is not allowed returns HTTP `409` with:
+
+```text
+INVALID_STATUS_TRANSITION
+```
+
+### Cancelling an Order
+
+A customer can cancel one of their own `PENDING` orders:
+
+```powershell
+Invoke-RestMethod `
+    -Uri http://localhost:8080/api/v1/orders/1/cancel `
+    -Method Post `
+    -Headers @{ Authorization = "Bearer $token" }
+```
+
+A successful request returns the updated order with status `CANCELLED`.
+
+The order itself is kept as part of the customer's history. Its items, prices, and totals do not change.
+
+The important part of cancellation is what happens to inventory.
+
+Stock was removed when the order was originally placed. If that pending order is cancelled, OrderFlow puts those quantities back into inventory and records an `ORDER_CANCELLED` movement for each item.
+
+For example, if an order reduced a keyboard from 10 units to 8, cancelling that order restores it to 10.
+
+The order status change, stock restoration, and movement records all belong to the same database transaction. They either succeed together or they are all rolled back together.
+
+That means the application cannot end up with an order marked `CANCELLED` while its stock is still missing.
+
+Cancellation also works if a product has been deactivated after the order was placed. The order already contains the product ID and quantity it needs to restore the stock, so the product does not need to be currently available for sale.
+
+Cancelling the same order twice is not allowed. The first cancellation restores the stock. A second request receives:
+
+```text
+INVALID_STATUS_TRANSITION
+```
+
+with HTTP `409`, and the inventory is not changed again.
+
+Customers can only cancel their own orders. Trying to cancel another customer's order returns HTTP `404`, just like trying to access another customer's order normally.
+
+### Managing Orders as an Administrator
+
+Administrators have their own order-management endpoints:
+
+```text
+GET  /api/v1/admin/orders
+GET  /api/v1/admin/orders/{id}
+POST /api/v1/admin/orders/{id}/confirm
+POST /api/v1/admin/orders/{id}/cancel
+```
+
+`GET /api/v1/admin/orders` returns orders from all customers as a paginated list, newest first.
+
+Unlike the customer order list, each admin summary also includes the customer ID so an administrator can see who placed the order.
+
+The list can optionally be filtered by status:
+
+```text
+GET /api/v1/admin/orders?status=PENDING
+GET /api/v1/admin/orders?status=CONFIRMED
+GET /api/v1/admin/orders?status=CANCELLED
+```
+
+An invalid status value returns HTTP `400`.
+
+`GET /api/v1/admin/orders/{id}` returns the full order together with its items.
+
+#### Confirming an Order
+
+An administrator can confirm a `PENDING` order with:
+
+```text
+POST /api/v1/admin/orders/{id}/confirm
+```
+
+The order becomes `CONFIRMED`.
+
+Confirmation does not change inventory.
+
+The stock was already removed when the customer placed the order, and confirming the order means that reservation is now final.
+
+Trying to confirm an order that is already `CONFIRMED` or `CANCELLED` returns:
+
+```text
+INVALID_STATUS_TRANSITION
+```
+
+#### Cancelling an Order as an Administrator
+
+An administrator can also cancel a `PENDING` order:
+
+```text
+POST /api/v1/admin/orders/{id}/cancel
+```
+
+The inventory behavior is the same as customer cancellation: the stock is returned and `ORDER_CANCELLED` movements are created.
+
+The movement history records the administrator's user ID as the person who performed the cancellation.
+
+This makes it possible to distinguish between an order cancelled by the customer and one cancelled administratively.
+
+### Concurrent Order Changes
+
+Order status changes use optimistic locking.
+
+Each order has an internal version number that changes whenever the order status changes.
+
+This protects against situations where two requests try to update the same `PENDING` order at nearly the same time.
+
+For example, a customer might try to cancel an order at the same moment an administrator tries to confirm it.
+
+Only one update is allowed to win.
+
+If the second request sees the order after the first change has already completed, the normal lifecycle rule rejects it with:
+
+```text
+INVALID_STATUS_TRANSITION
+```
+
+If both requests read the same old version before either change is committed, the stale update is rejected with:
+
+```text
+CONCURRENT_MODIFICATION
+```
+
+and HTTP `409`.
+
+Nothing from the rejected transaction is kept.
+
+For a cancellation, that is especially important because returning inventory is a side effect. OrderFlow checks that the order version is still current before restoring stock, so a stale cancellation cannot accidentally add the same inventory back twice.
+
+The order endpoints appear under **Orders** and **Admin Orders** in Swagger UI.
 
 ## User Registration
 
@@ -829,6 +990,7 @@ They cover fast application behavior such as:
 - administrator bootstrap logic
 - JWT configuration and token handling
 - order total calculation
+- order lifecycle rules
 
 Run the complete verification build with:
 
@@ -855,6 +1017,12 @@ The integration suite covers:
 - order snapshots
 - rollback when a multi-item order cannot be completed
 - customer order ownership and isolation
+- customer order cancellation
+- administrator order confirmation and cancellation
+- stock being returned exactly once when an order is cancelled
+- cancellation after a product has been deactivated
+- administrator order lists, filtering, and details
+- optimistic locking of order status changes
 - customer registration
 - login
 - JWT validation

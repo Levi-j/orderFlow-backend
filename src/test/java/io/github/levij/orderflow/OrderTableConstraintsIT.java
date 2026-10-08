@@ -1,9 +1,11 @@
 package io.github.levij.orderflow;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigDecimal;
+import java.util.Map;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -101,6 +103,30 @@ class OrderTableConstraintsIT {
 
 		assertThatCode(() -> insertMovement(orderId)).doesNotThrowAnyException();
 		assertThatCode(() -> insertMovement(null)).doesNotThrowAnyException();
+	}
+
+	@Test
+	void versionIsARequiredBigintThatStartsAtZero() {
+		Map<String, Object> column = jdbcTemplate.queryForMap(
+				"SELECT data_type, is_nullable, column_default FROM information_schema.columns "
+						+ "WHERE table_name = 'orders' AND column_name = 'version'");
+		assertThat(column).containsEntry("data_type", "bigint")
+				.containsEntry("is_nullable", "NO")
+				.containsEntry("column_default", "0");
+
+		assertThat(jdbcTemplate.queryForObject("SELECT version FROM orders WHERE id = ?", Long.class, orderId))
+				.isZero();
+		assertThatThrownBy(() -> jdbcTemplate.update("UPDATE orders SET version = NULL WHERE id = ?", orderId))
+				.isInstanceOf(DataIntegrityViolationException.class);
+	}
+
+	@Test
+	void statusIndexSupportsTheAdminFilter() {
+		String definition = jdbcTemplate.queryForObject(
+				"SELECT indexdef FROM pg_indexes WHERE tablename = 'orders' AND indexname = 'ix_orders_status_created_at'",
+				String.class);
+
+		assertThat(definition).endsWith("(status, created_at DESC)");
 	}
 
 	private long insertOrder(long customerId, String status, String totalAmount) {
