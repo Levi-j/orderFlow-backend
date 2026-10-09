@@ -467,8 +467,6 @@ The feature packages still provide clear boundaries while keeping the system str
 
 ## Project Structure
 
-## Project Structure
-
 ```text
 orderFlow-backend/
 ├── .github/
